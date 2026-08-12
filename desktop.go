@@ -20,6 +20,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/sys/unix"
 
+	"openghub/internal/devices"
 	"openghub/internal/hidpp"
 )
 
@@ -30,13 +31,24 @@ var desktopAssets embed.FS
 var desktopIcon []byte
 
 type DesktopController struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	opMu   sync.Mutex
-	dev    *hidpp.Device
-	name   string
-	perm   bool
-	rate   int
+	ctx               context.Context
+	cancel            context.CancelFunc
+	opMu              sync.Mutex
+	sessions          map[string]*DeviceSession
+	selectedID        string
+	perm              bool
+	preferences       storedPreferences
+	preferencesLoaded bool
+}
+
+type DeviceSession struct {
+	Device       *hidpp.Device
+	Identity     hidpp.DeviceIdentity
+	Driver       devices.Driver
+	Features     devices.FeatureSet
+	Capabilities devices.Capabilities
+	Name         string
+	Rate         int
 	// activeProfileSector remembers the onboard profile that owns the current
 	// configuration while the mouse is temporarily in host mode for live DPI.
 	// In host mode the firmware reports CurrentProfileSector as 0x0000.
@@ -47,24 +59,41 @@ type DesktopController struct {
 	surfaceMode         int
 	surfaceKnown        bool
 	surfacePreferred    bool
-	preferencesLoaded   bool
 }
 
 type DeviceState struct {
-	Connected             bool   `json:"connected"`
-	Permission            bool   `json:"permissionDenied"`
-	Name                  string `json:"name"`
-	Path                  string `json:"path"`
-	Battery               int    `json:"battery"`
-	Charging              bool   `json:"charging"`
-	HasBattery            bool   `json:"hasBattery"`
-	Profile               string `json:"profile"`
-	DPIX                  int    `json:"dpiX"`
-	DPIY                  int    `json:"dpiY"`
-	PollingRate           int    `json:"pollingRate"`
-	ConfiguredPollingRate int    `json:"configuredPollingRate"`
-	OnboardModeAvailable  bool   `json:"onboardModeAvailable"`
-	OnboardModeEnabled    bool   `json:"onboardModeEnabled"`
+	Connected             bool                 `json:"connected"`
+	Permission            bool                 `json:"permissionDenied"`
+	Name                  string               `json:"name"`
+	Path                  string               `json:"path"`
+	Battery               int                  `json:"battery"`
+	Charging              bool                 `json:"charging"`
+	HasBattery            bool                 `json:"hasBattery"`
+	Profile               string               `json:"profile"`
+	DPIX                  int                  `json:"dpiX"`
+	DPIY                  int                  `json:"dpiY"`
+	PollingRate           int                  `json:"pollingRate"`
+	ConfiguredPollingRate int                  `json:"configuredPollingRate"`
+	OnboardModeAvailable  bool                 `json:"onboardModeAvailable"`
+	OnboardModeEnabled    bool                 `json:"onboardModeEnabled"`
+	DeviceID              string               `json:"deviceId"`
+	ModelID               string               `json:"modelId"`
+	Capabilities          devices.Capabilities `json:"capabilities"`
+}
+
+type DeviceSummaryDTO struct {
+	ID               string               `json:"id"`
+	ModelID          string               `json:"modelId"`
+	Name             string               `json:"name"`
+	Path             string               `json:"path"`
+	VendorID         uint16               `json:"vendorId"`
+	ProductID        uint16               `json:"productId"`
+	Serial           string               `json:"serial"`
+	Connected        bool                 `json:"connected"`
+	Selected         bool                 `json:"selected"`
+	Supported        bool                 `json:"supported"`
+	PermissionDenied bool                 `json:"permissionDenied"`
+	Capabilities     devices.Capabilities `json:"capabilities"`
 }
 
 type ProfileDTO struct {
@@ -151,8 +180,12 @@ type advancedPreferences struct {
 }
 
 type storedPreferences struct {
-	Superstrike advancedPreferences `json:"superstrike"`
+	Version           int                            `json:"version"`
+	Devices           map[string]advancedPreferences `json:"devices"`
+	LegacySuperstrike *advancedPreferences           `json:"superstrike,omitempty"`
 }
+
+const storedPreferencesVersion = 2
 
 func preferencesPath() (string, error) {
 	dir, err := os.UserConfigDir()
@@ -171,10 +204,27 @@ func readStoredPreferences(path string) (storedPreferences, error) {
 	if err := json.Unmarshal(data, &preferences); err != nil {
 		return storedPreferences{}, err
 	}
+	if preferences.Devices == nil {
+		preferences.Devices = make(map[string]advancedPreferences)
+	}
+	// Version 1 stored one global Superstrike object. Promote it to the model
+	// fallback key so existing installations retain their choices.
+	if preferences.LegacySuperstrike != nil {
+		if _, exists := preferences.Devices["superstrike"]; !exists {
+			preferences.Devices["superstrike"] = *preferences.LegacySuperstrike
+		}
+		preferences.LegacySuperstrike = nil
+	}
+	preferences.Version = storedPreferencesVersion
 	return preferences, nil
 }
 
 func writeStoredPreferences(path string, preferences storedPreferences) error {
+	preferences.Version = storedPreferencesVersion
+	preferences.LegacySuperstrike = nil
+	if preferences.Devices == nil {
+		preferences.Devices = make(map[string]advancedPreferences)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -251,11 +301,11 @@ func (c *DesktopController) shutdown(context.Context) {
 	}
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
-	if c.dev != nil {
+	for id, session := range c.sessions {
 		// Onboard/host mode is a user-owned device setting. Closing openGhub must
 		// preserve whichever mode is currently selected.
-		c.dev.Close()
-		c.dev = nil
+		session.Device.Close()
+		delete(c.sessions, id)
 	}
 }
 
@@ -265,8 +315,10 @@ func (c *DesktopController) refreshLoop() {
 	go c.rateLoop()
 	for {
 		state := c.GetDeviceState()
+		deviceList := c.GetDevices()
 		if c.ctx != nil {
 			runtime.EventsEmit(c.ctx, "device:update", state)
+			runtime.EventsEmit(c.ctx, "devices:update", deviceList)
 		}
 		select {
 		case <-c.ctx.Done():
@@ -289,81 +341,214 @@ func (c *DesktopController) loadPreferencesLocked() {
 	if err != nil {
 		return
 	}
-	advanced := preferences.Superstrike
+	c.preferences = preferences
+}
+
+func (c *DesktopController) applyStoredPreferencesLocked(session *DeviceSession) {
+	var advanced advancedPreferences
+	found := false
+	for _, key := range preferenceLookupKeys(session) {
+		if value, exists := c.preferences.Devices[key]; exists {
+			advanced, found = value, true
+			break
+		}
+	}
+	if !found {
+		return
+	}
 	if advanced.GamingSurfaceMode != nil && validStoredSurfaceMode(*advanced.GamingSurfaceMode) {
-		c.surfaceMode = *advanced.GamingSurfaceMode
-		c.surfaceKnown = true
-		c.surfacePreferred = true
+		session.surfaceMode = *advanced.GamingSurfaceMode
+		session.surfaceKnown = true
+		session.surfacePreferred = true
 	}
 	if advanced.BhopWindowMS != nil && validStoredBhopWindow(*advanced.BhopWindowMS) {
-		c.bhopWindow = *advanced.BhopWindowMS
-		c.bhopKnown = true
-		c.bhopPreferred = true
+		session.bhopWindow = *advanced.BhopWindowMS
+		session.bhopKnown = true
+		session.bhopPreferred = true
 	}
 }
 
 func (c *DesktopController) savePreferencesLocked() error {
+	session := c.selectedSessionLocked()
+	if session == nil {
+		return fmt.Errorf("no mouse selected")
+	}
 	path, err := preferencesPath()
 	if err != nil {
 		return err
 	}
 	var advanced advancedPreferences
-	if c.surfacePreferred {
-		mode := c.surfaceMode
+	if session.surfacePreferred {
+		mode := session.surfaceMode
 		advanced.GamingSurfaceMode = &mode
 	}
-	if c.bhopPreferred {
-		window := c.bhopWindow
+	if session.bhopPreferred {
+		window := session.bhopWindow
 		advanced.BhopWindowMS = &window
 	}
-	return writeStoredPreferences(path, storedPreferences{Superstrike: advanced})
+	if c.preferences.Devices == nil {
+		c.preferences.Devices = make(map[string]advancedPreferences)
+	}
+	c.preferences.Version = storedPreferencesVersion
+	c.preferences.Devices[preferenceStorageKey(session)] = advanced
+	return writeStoredPreferences(path, c.preferences)
 }
 
-func (c *DesktopController) connectLocked() {
+func preferenceStorageKey(session *DeviceSession) string {
+	modelID := session.Driver.ID()
+	if session.Identity.Serial != "" {
+		return modelID + "/" + session.Identity.Serial
+	}
+	return modelID
+}
+
+func preferenceLookupKeys(session *DeviceSession) []string {
+	exact := preferenceStorageKey(session)
+	if exact == session.Driver.ID() {
+		return []string{exact}
+	}
+	return []string{exact, session.Driver.ID()}
+}
+
+func (c *DesktopController) initializeSessionLocked(device *hidpp.Device) *DeviceSession {
+	identity := device.Identity()
+	matchIdentity := identity
+	if name, err := device.DeviceName(); err == nil && name != "" {
+		device.Name = name
+		matchIdentity.Name = name
+	}
+	features := devices.ProbeFeatures(device)
+	driver := devices.Match(matchIdentity, features)
+	session := &DeviceSession{
+		Device:       device,
+		Identity:     identity,
+		Driver:       driver,
+		Features:     features,
+		Capabilities: driver.Capabilities(features),
+		Name:         driver.DisplayName(),
+	}
+	if driver.ID() == "unknown-logitech" {
+		session.Name = normalizeDeviceName(matchIdentity.Name)
+	}
+	c.applyStoredPreferencesLocked(session)
+	if !session.surfacePreferred && session.Capabilities.GamingSurface {
+		if mode, err := device.GamingSurfaceMode(); err == nil {
+			session.surfaceMode, session.surfaceKnown = int(mode), true
+		}
+	}
+	if !session.bhopPreferred && session.Capabilities.Bhop {
+		if window, err := device.BhopWindow(); err == nil {
+			session.bhopWindow, session.bhopKnown = window, true
+		}
+	}
+	mode, modeErr := device.OnboardMode()
+	if sector, err := device.CurrentProfileSector(); err == nil && sector != 0 {
+		session.activeProfileSector = sector
+	}
+	if modeErr == nil && mode == hidpp.OnboardModeHost {
+		c.applyHostPreferencesToSessionLocked(session)
+	}
+	return session
+}
+
+func (c *DesktopController) syncDevicesLocked() {
 	c.loadPreferencesLocked()
-	devs, perm, _ := hidpp.Discover()
+	if c.sessions == nil {
+		c.sessions = make(map[string]*DeviceSession)
+	}
+	discovered, perm, _ := hidpp.Discover()
 	c.perm = perm
-	if len(devs) == 0 {
-		return
+	seen := make(map[string]bool, len(discovered))
+	for _, device := range discovered {
+		identity := device.Identity()
+		seen[identity.ID] = true
+		if existing := c.sessions[identity.ID]; existing != nil {
+			if _, err := existing.Device.Ping(); err == nil && endpointPriority(existing.Identity) >= endpointPriority(identity) {
+				device.Close()
+				continue
+			}
+			existing.Device.Close()
+			delete(c.sessions, identity.ID)
+		}
+		c.sessions[identity.ID] = c.initializeSessionLocked(device)
 	}
-	pick := pickDevice(devs)
-	for _, d := range devs {
-		if d != pick {
-			d.Close()
+	for id, session := range c.sessions {
+		if seen[id] {
+			continue
+		}
+		if _, err := session.Device.Ping(); err != nil {
+			session.Device.Close()
+			delete(c.sessions, id)
 		}
 	}
-	c.dev = pick
-	c.perm = false
-	// Read live advanced state before changing the device mode. Both settings
-	// are volatile on the Superstrike and a host/onboard transition can restore
-	// firmware defaults before the app has had a chance to observe them.
-	if !c.surfacePreferred && pick.Has(hidpp.FeatMouseTuning) {
-		if mode, err := pick.GamingSurfaceMode(); err == nil {
-			c.surfaceMode, c.surfaceKnown = int(mode), true
+	if _, ok := c.sessions[c.selectedID]; !ok {
+		c.selectedID = ""
+	}
+	if c.selectedID == "" {
+		ids := make([]string, 0, len(c.sessions))
+		for id, session := range c.sessions {
+			if session.Driver.Supported() {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		if len(ids) > 0 {
+			c.selectedID = ids[0]
 		}
 	}
-	if !c.bhopPreferred && pick.Has(hidpp.FeatBunnyHopping) {
-		if window, err := pick.BhopWindow(); err == nil {
-			c.bhopWindow, c.bhopKnown = window, true
+}
+
+func endpointPriority(identity hidpp.DeviceIdentity) int {
+	priority := 0
+	if !strings.Contains(strings.ToUpper(identity.Name), "RECEIVER") {
+		priority += 10
+	}
+	if identity.ProductID != 0xC54D {
+		priority += 2
+	}
+	return priority
+}
+
+func (c *DesktopController) selectedSessionLocked() *DeviceSession {
+	return c.sessions[c.selectedID]
+}
+
+func (c *DesktopController) GetDevices() []DeviceSummaryDTO {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.syncDevicesLocked()
+	out := make([]DeviceSummaryDTO, 0, len(c.sessions))
+	for id, session := range c.sessions {
+		out = append(out, DeviceSummaryDTO{
+			ID: id, ModelID: session.Driver.ID(), Name: session.Name,
+			Path: session.Identity.Path, VendorID: session.Identity.VendorID,
+			ProductID: session.Identity.ProductID, Serial: session.Identity.Serial,
+			Connected: true, Selected: id == c.selectedID, Supported: session.Driver.Supported(),
+			Capabilities: session.Capabilities,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Selected != out[j].Selected {
+			return out[i].Selected
 		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func (c *DesktopController) SelectDevice(id string) (DeviceState, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.syncDevicesLocked()
+	session := c.sessions[id]
+	if session == nil {
+		return DeviceState{}, fmt.Errorf("mouse is no longer connected")
 	}
-	mode, modeErr := pick.OnboardMode()
-	if sector, err := pick.CurrentProfileSector(); err == nil && sector != 0 {
-		c.activeProfileSector = sector
+	if !session.Driver.Supported() {
+		return DeviceState{}, fmt.Errorf("%s support is still in development", session.Name)
 	}
-	if n, err := pick.DeviceName(); err == nil && n != "" {
-		c.name = normalizeDeviceName(n)
-	} else {
-		c.name = normalizeDeviceName(pick.Name)
-	}
-	// Host-only choices are restored only while software control is active.
-	// Merely opening openGhub must never change the mode selected on the mouse.
-	if modeErr == nil && mode == hidpp.OnboardModeHost && c.surfacePreferred && c.surfaceKnown && pick.Has(hidpp.FeatMouseTuning) {
-		_ = pick.SetGamingSurfaceMode(hidpp.GamingSurfaceMode(c.surfaceMode))
-	}
-	if modeErr == nil && mode == hidpp.OnboardModeHost && c.bhopPreferred && c.bhopKnown && pick.Has(hidpp.FeatBunnyHopping) {
-		_ = pick.SetBhopWindow(c.bhopWindow)
-	}
+	c.selectedID = id
+	return c.deviceStateLocked(session), nil
 }
 
 func normalizeDeviceName(name string) string {
@@ -375,29 +560,20 @@ func normalizeDeviceName(name string) string {
 }
 
 func (c *DesktopController) ensureDeviceLocked() error {
-	if c.dev != nil {
-		if _, err := c.dev.Ping(); err == nil {
+	if session := c.selectedSessionLocked(); session != nil {
+		if _, err := session.Device.Ping(); err == nil {
 			return nil
 		}
-		c.dev.Close()
-		c.dev = nil
-		c.rate = 0
-		c.activeProfileSector = 0
-		if !c.bhopPreferred {
-			c.bhopWindow = 0
-			c.bhopKnown = false
-		}
-		if !c.surfacePreferred {
-			c.surfaceMode = 0
-			c.surfaceKnown = false
-		}
+		session.Device.Close()
+		delete(c.sessions, c.selectedID)
+		c.selectedID = ""
 	}
-	c.connectLocked()
-	if c.dev == nil {
+	c.syncDevicesLocked()
+	if c.selectedSessionLocked() == nil {
 		if c.perm {
 			return fmt.Errorf("mouse found, but access was denied; install the udev rule and reconnect it")
 		}
-		return fmt.Errorf("no Superstrike mouse detected")
+		return fmt.Errorf("no supported mouse detected")
 	}
 	return nil
 }
@@ -408,17 +584,25 @@ func (c *DesktopController) GetDeviceState() DeviceState {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return DeviceState{Permission: c.perm}
 	}
-	s := DeviceState{Connected: true, Name: c.name, Path: c.dev.Path, PollingRate: c.rate}
-	if c.dev.Has(hidpp.FeatOnboardProfile) {
+	return c.deviceStateLocked(c.selectedSessionLocked())
+}
+
+func (c *DesktopController) deviceStateLocked(session *DeviceSession) DeviceState {
+	device := session.Device
+	s := DeviceState{
+		Connected: true, Name: session.Name, Path: device.Path, PollingRate: session.Rate,
+		DeviceID: session.Identity.ID, ModelID: session.Driver.ID(), Capabilities: session.Capabilities,
+	}
+	if session.Capabilities.OnboardMode {
 		s.OnboardModeAvailable = true
-		if mode, err := c.dev.OnboardMode(); err == nil {
+		if mode, err := device.OnboardMode(); err == nil {
 			s.OnboardModeEnabled = mode == hidpp.OnboardModeOnboard
 		}
 	}
-	if b, err := c.dev.Battery(); err == nil {
+	if b, err := device.Battery(); err == nil {
 		s.Battery, s.Charging, s.HasBattery = b.Percent, b.Charging, b.Available
 	}
-	if p, err := c.activeProfileLocked(); err == nil {
+	if p, err := c.activeProfileLocked(session); err == nil {
 		s.Profile, s.DPIX, s.DPIY = p.Name, p.DPIX, p.DPIY
 		s.ConfiguredPollingRate = p.ReportRateHz
 		if s.Profile == "" {
@@ -428,7 +612,7 @@ func (c *DesktopController) GetDeviceState() DeviceState {
 			s.PollingRate = p.ReportRateHz
 		}
 	}
-	if dpi, err := c.dev.CurrentDPI(); err == nil && dpi > 0 {
+	if dpi, err := device.CurrentDPI(); err == nil && dpi > 0 {
 		s.DPIX, s.DPIY = dpi, dpi
 	}
 	return s
@@ -440,18 +624,20 @@ func (c *DesktopController) GetProfiles() ([]ProfileDTO, error) {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return nil, err
 	}
-	profiles, err := c.dev.Profiles()
+	session := c.selectedSessionLocked()
+	device := session.Device
+	profiles, err := session.Driver.Profiles(device)
 	if err != nil && len(profiles) == 0 {
 		return nil, err
 	}
-	reported, _ := c.dev.CurrentProfileSector()
-	liveDPI, _ := c.dev.CurrentDPI()
-	active := resolveActiveProfileSector(reported, c.activeProfileSector, profiles)
+	reported, _ := device.CurrentProfileSector()
+	liveDPI, _ := device.CurrentDPI()
+	active := resolveActiveProfileSector(reported, session.activeProfileSector, profiles)
 	if active != 0 {
-		c.activeProfileSector = active
+		session.activeProfileSector = active
 	}
 	buttonCount := 5
-	if info, infoErr := c.dev.ProfileInfo(); infoErr == nil && info.Buttons > 0 && info.Buttons <= 16 {
+	if info, infoErr := device.ProfileInfo(); infoErr == nil && info.Buttons > 0 && info.Buttons <= 16 {
 		buttonCount = info.Buttons
 	}
 	out := make([]ProfileDTO, 0, len(profiles))
@@ -489,15 +675,16 @@ func (c *DesktopController) UpdateDPIStage(sector, stage, x, y int, enabled, mak
 	if err := c.ensureDeviceLocked(); err != nil {
 		return 0, err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return 0, err
 	}
-	defer c.restoreHostModeLocked()
-	actual, err := c.dev.WriteProfileDPIStage(sector, stage, x, y, enabled, makeDefault)
+	defer c.restoreHostModeLocked(session)
+	actual, err := session.Driver.WriteDPIStage(session.Device, sector, stage, x, y, enabled, makeDefault)
 	if err != nil {
 		return 0, err
 	}
-	c.activeProfileSector = actual
+	session.activeProfileSector = actual
 	return actual, nil
 }
 
@@ -508,11 +695,11 @@ func (c *DesktopController) SelectDPI(sector, dpi int) error {
 	if sector <= 0 {
 		return fmt.Errorf("invalid active profile sector 0x%04X", sector)
 	}
-	return c.withDevice(func(d *hidpp.Device) error {
-		if err := d.SelectLiveDPI(dpi); err != nil {
+	return c.withSession(func(session *DeviceSession) error {
+		if err := session.Device.SelectLiveDPI(dpi); err != nil {
 			return err
 		}
-		c.activeProfileSector = sector
+		session.activeProfileSector = sector
 		return nil
 	})
 }
@@ -521,7 +708,9 @@ func (c *DesktopController) UpdateDPI(sector, x, y int) error {
 	if x < 100 || x > hidpp.MaxDPI || y < 100 || y > hidpp.MaxDPI {
 		return fmt.Errorf("DPI must be between 100 and %d", hidpp.MaxDPI)
 	}
-	return c.withDevice(func(d *hidpp.Device) error { return d.WriteProfileResolution(sector, x, y) })
+	return c.withSession(func(session *DeviceSession) error {
+		return session.Driver.WriteResolution(session.Device, sector, x, y)
+	})
 }
 
 func (c *DesktopController) UpdatePollingRate(sector, hz int) (int, error) {
@@ -530,24 +719,25 @@ func (c *DesktopController) UpdatePollingRate(sector, hz int) (int, error) {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return 0, err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return 0, err
 	}
-	defer c.restoreHostModeLocked()
-	actual, err := c.dev.SetProfileReportRateHz(sector, hz)
+	defer c.restoreHostModeLocked(session)
+	actual, err := session.Driver.SetReportRate(session.Device, sector, hz)
 	if err != nil {
 		return 0, err
 	}
-	c.activeProfileSector = actual
+	session.activeProfileSector = actual
 	return actual, nil
 }
 
 func (c *DesktopController) ActivateProfile(sector int) error {
-	return c.withDevice(func(d *hidpp.Device) error {
-		if err := d.SetCurrentProfileSector(sector); err != nil {
+	return c.withSession(func(session *DeviceSession) error {
+		if err := session.Driver.SetCurrentProfile(session.Device, sector); err != nil {
 			return err
 		}
-		c.activeProfileSector = sector
+		session.activeProfileSector = sector
 		return nil
 	})
 }
@@ -562,22 +752,25 @@ func (c *DesktopController) RenameProfile(sector int, name string) (int, error) 
 	if err := c.ensureDeviceLocked(); err != nil {
 		return 0, err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return 0, err
 	}
-	defer c.restoreHostModeLocked()
-	actual, err := c.dev.SetProfileName(sector, name)
+	defer c.restoreHostModeLocked(session)
+	actual, err := session.Driver.SetProfileName(session.Device, sector, name)
 	if err != nil {
 		return 0, err
 	}
-	if sector == c.activeProfileSector || sector >= 0x0100 {
-		c.activeProfileSector = actual
+	if sector == session.activeProfileSector || sector >= 0x0100 {
+		session.activeProfileSector = actual
 	}
 	return actual, nil
 }
 
 func (c *DesktopController) SetProfileEnabled(index int, enabled bool) error {
-	return c.withDevice(func(d *hidpp.Device) error { return d.SetProfileEnabled(index, enabled) })
+	return c.withSession(func(session *DeviceSession) error {
+		return session.Driver.SetProfileEnabled(session.Device, index, enabled)
+	})
 }
 
 func (c *DesktopController) GetButtons() (ButtonsPayload, error) {
@@ -586,8 +779,9 @@ func (c *DesktopController) GetButtons() (ButtonsPayload, error) {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return ButtonsPayload{}, err
 	}
-	info, _ := c.dev.ProfileInfo()
-	p, err := c.activeProfileLocked()
+	session := c.selectedSessionLocked()
+	info, _ := session.Device.ProfileInfo()
+	p, err := c.activeProfileLocked(session)
 	if err != nil {
 		return ButtonsPayload{}, err
 	}
@@ -609,21 +803,21 @@ func (c *DesktopController) GetButtons() (ButtonsPayload, error) {
 // activeProfileLocked returns the profile associated with the current live
 // settings. The caller must hold opMu. Host-control mode reports sector zero,
 // so use the last known onboard sector before falling back to device defaults.
-func (c *DesktopController) activeProfileLocked() (hidpp.Profile, error) {
-	profiles, err := c.dev.Profiles()
+func (c *DesktopController) activeProfileLocked(session *DeviceSession) (hidpp.Profile, error) {
+	profiles, err := session.Driver.Profiles(session.Device)
 	if err == nil && len(profiles) > 0 {
-		reported, _ := c.dev.CurrentProfileSector()
-		sector := resolveActiveProfileSector(reported, c.activeProfileSector, profiles)
+		reported, _ := session.Device.CurrentProfileSector()
+		sector := resolveActiveProfileSector(reported, session.activeProfileSector, profiles)
 		for _, profile := range profiles {
 			if profile.Sector == sector {
-				c.activeProfileSector = sector
+				session.activeProfileSector = sector
 				return profile, nil
 			}
 		}
 	}
-	p, fallbackErr := c.dev.ActiveProfile()
+	p, fallbackErr := session.Device.ActiveProfile()
 	if fallbackErr == nil {
-		c.activeProfileSector = p.Sector
+		session.activeProfileSector = p.Sector
 	}
 	return p, fallbackErr
 }
@@ -675,15 +869,16 @@ func (c *DesktopController) SetButton(sector, index, kind int, code uint16, mods
 	if err := c.ensureDeviceLocked(); err != nil {
 		return 0, err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return 0, err
 	}
-	defer c.restoreHostModeLocked()
-	actual, err := c.dev.SetProfileButton(sector, index, a)
+	defer c.restoreHostModeLocked(session)
+	actual, err := session.Driver.SetProfileButton(session.Device, sector, index, a)
 	if err != nil {
 		return 0, err
 	}
-	c.activeProfileSector = actual
+	session.activeProfileSector = actual
 	return actual, nil
 }
 
@@ -693,13 +888,17 @@ func (c *DesktopController) GetHaptics() (HapticsPayload, error) {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return HapticsPayload{}, err
 	}
-	caps, err := c.dev.AnalogCaps()
+	session := c.selectedSessionLocked()
+	if !session.Capabilities.Haptics {
+		return HapticsPayload{}, fmt.Errorf("haptics are not available for %s", session.Name)
+	}
+	caps, err := session.Device.AnalogCaps()
 	if err != nil {
 		return HapticsPayload{}, err
 	}
 	out := HapticsPayload{MaxActuation: caps.MaxActuation, MaxRapidTrigger: caps.MaxRapidTrigger, MaxHaptics: caps.MaxHaptics}
 	for i := 0; i < caps.Buttons; i++ {
-		cfg, err := c.dev.AnalogConfig(i)
+		cfg, err := session.Device.AnalogConfig(i)
 		if err != nil {
 			return HapticsPayload{}, err
 		}
@@ -720,7 +919,8 @@ func (c *DesktopController) GetHaptics() (HapticsPayload, error) {
 }
 
 func (c *DesktopController) SetHaptic(index int, field string, value int) error {
-	return c.withDevice(func(d *hidpp.Device) error {
+	return c.withSession(func(session *DeviceSession) error {
+		d := session.Device
 		switch field {
 		case "haptics":
 			return d.SetHaptics(index, value)
@@ -742,29 +942,31 @@ func (c *DesktopController) GetAdvancedSettings() (AdvancedSettingsPayload, erro
 	if err := c.ensureDeviceLocked(); err != nil {
 		return AdvancedSettingsPayload{}, err
 	}
+	session := c.selectedSessionLocked()
+	device := session.Device
 
 	var out AdvancedSettingsPayload
-	if c.dev.Has(hidpp.FeatMouseTuning) {
+	if session.Capabilities.GamingSurface {
 		out.GamingSurfaceAvailable = true
-		if c.surfaceKnown {
-			out.GamingSurfaceMode = c.surfaceMode
+		if session.surfaceKnown {
+			out.GamingSurfaceMode = session.surfaceMode
 		} else {
-			mode, err := c.dev.GamingSurfaceMode()
+			mode, err := device.GamingSurfaceMode()
 			if err != nil {
 				return AdvancedSettingsPayload{}, err
 			}
-			c.surfaceMode, c.surfaceKnown = int(mode), true
-			out.GamingSurfaceMode = c.surfaceMode
+			session.surfaceMode, session.surfaceKnown = int(mode), true
+			out.GamingSurfaceMode = session.surfaceMode
 		}
 	}
-	if c.dev.Has(hidpp.FeatBunnyHopping) {
+	if session.Capabilities.Bhop {
 		out.BhopAvailable = true
-		if !c.bhopKnown {
-			if window, err := c.dev.BhopWindow(); err == nil {
-				c.bhopWindow, c.bhopKnown = window, true
+		if !session.bhopKnown {
+			if window, err := device.BhopWindow(); err == nil {
+				session.bhopWindow, session.bhopKnown = window, true
 			}
 		}
-		out.BhopWindowMS, out.BhopKnown = c.bhopWindow, c.bhopKnown
+		out.BhopWindowMS, out.BhopKnown = session.bhopWindow, session.bhopKnown
 	}
 	return out, nil
 }
@@ -775,13 +977,14 @@ func (c *DesktopController) SetGamingSurfaceMode(mode int) error {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return err
 	}
-	if err := c.dev.SetGamingSurfaceMode(hidpp.GamingSurfaceMode(mode)); err != nil {
+	if err := session.Device.SetGamingSurfaceMode(hidpp.GamingSurfaceMode(mode)); err != nil {
 		return err
 	}
-	c.surfaceMode, c.surfaceKnown, c.surfacePreferred = mode, true, true
+	session.surfaceMode, session.surfaceKnown, session.surfacePreferred = mode, true, true
 	if err := c.savePreferencesLocked(); err != nil {
 		return fmt.Errorf("gaming surface mode applied, but the preference could not be saved: %w", err)
 	}
@@ -794,30 +997,32 @@ func (c *DesktopController) SetBhopWindow(windowMS int) error {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return err
 	}
-	if err := c.dev.SetBhopWindow(windowMS); err != nil {
+	if err := session.Device.SetBhopWindow(windowMS); err != nil {
 		return err
 	}
-	c.bhopWindow, c.bhopKnown, c.bhopPreferred = windowMS, true, true
+	session.bhopWindow, session.bhopKnown, session.bhopPreferred = windowMS, true, true
 	if err := c.savePreferencesLocked(); err != nil {
 		return fmt.Errorf("bhop mode applied, but the preference could not be saved: %w", err)
 	}
 	return nil
 }
 
-func (c *DesktopController) withDevice(fn func(*hidpp.Device) error) error {
+func (c *DesktopController) withSession(fn func(*DeviceSession) error) error {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	if err := c.ensureDeviceLocked(); err != nil {
 		return err
 	}
-	if err := c.requireHostModeLocked(); err != nil {
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
 		return err
 	}
-	defer c.restoreHostModeLocked()
-	return fn(c.dev)
+	defer c.restoreHostModeLocked(session)
+	return fn(session)
 }
 
 // SetOnboardMode mirrors the official app's profile-page control. Onboard
@@ -829,15 +1034,16 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return err
 	}
+	session := c.selectedSessionLocked()
 	target := byte(hidpp.OnboardModeHost)
 	if enabled {
 		target = hidpp.OnboardModeOnboard
 	}
-	if err := c.dev.SetOnboardMode(target); err != nil {
+	if err := session.Device.SetOnboardMode(target); err != nil {
 		return err
 	}
 	time.Sleep(180 * time.Millisecond)
-	mode, err := c.dev.OnboardMode()
+	mode, err := session.Device.OnboardMode()
 	if err != nil {
 		return fmt.Errorf("onboard mode changed, but its state could not be verified: %w", err)
 	}
@@ -845,13 +1051,16 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 		return fmt.Errorf("onboard mode did not apply: got 0x%02X, want 0x%02X", mode, target)
 	}
 	if !enabled {
-		c.applyHostPreferencesLocked()
+		c.applyHostPreferencesToSessionLocked(session)
 	}
 	return nil
 }
 
-func (c *DesktopController) requireHostModeLocked() error {
-	mode, err := c.dev.OnboardMode()
+func (c *DesktopController) requireHostModeLocked(session *DeviceSession) error {
+	if !session.Capabilities.OnboardMode {
+		return nil
+	}
+	mode, err := session.Device.OnboardMode()
 	if err != nil {
 		return fmt.Errorf("could not read onboard mode: %w", err)
 	}
@@ -864,23 +1073,26 @@ func (c *DesktopController) requireHostModeLocked() error {
 	return nil
 }
 
-func (c *DesktopController) restoreHostModeLocked() {
-	mode, err := c.dev.OnboardMode()
+func (c *DesktopController) restoreHostModeLocked(session *DeviceSession) {
+	if !session.Capabilities.OnboardMode {
+		return
+	}
+	mode, err := session.Device.OnboardMode()
 	if err == nil && mode == hidpp.OnboardModeHost {
 		return
 	}
-	if c.dev.SetOnboardMode(hidpp.OnboardModeHost) == nil {
+	if session.Device.SetOnboardMode(hidpp.OnboardModeHost) == nil {
 		time.Sleep(180 * time.Millisecond)
-		c.applyHostPreferencesLocked()
+		c.applyHostPreferencesToSessionLocked(session)
 	}
 }
 
-func (c *DesktopController) applyHostPreferencesLocked() {
-	if c.surfacePreferred && c.surfaceKnown && c.dev.Has(hidpp.FeatMouseTuning) {
-		_ = c.dev.SetGamingSurfaceMode(hidpp.GamingSurfaceMode(c.surfaceMode))
+func (c *DesktopController) applyHostPreferencesToSessionLocked(session *DeviceSession) {
+	if session.surfacePreferred && session.surfaceKnown && session.Capabilities.GamingSurface {
+		_ = session.Device.SetGamingSurfaceMode(hidpp.GamingSurfaceMode(session.surfaceMode))
 	}
-	if c.bhopPreferred && c.bhopKnown && c.dev.Has(hidpp.FeatBunnyHopping) {
-		_ = c.dev.SetBhopWindow(c.bhopWindow)
+	if session.bhopPreferred && session.bhopKnown && session.Capabilities.Bhop {
+		_ = session.Device.SetBhopWindow(session.bhopWindow)
 	}
 }
 
@@ -918,8 +1130,8 @@ func (c *DesktopController) rateLoop() {
 		}
 		c.opMu.Lock()
 		cur := ""
-		if c.dev != nil {
-			cur = c.dev.Path
+		if session := c.selectedSessionLocked(); session != nil {
+			cur = session.Device.Path
 		}
 		c.opMu.Unlock()
 		if cur != path {
@@ -970,7 +1182,9 @@ func (c *DesktopController) rateLoop() {
 			if med := diffs[len(diffs)/2]; med > 0 {
 				measured := nearestSupportedRate(1 / med)
 				c.opMu.Lock()
-				c.rate = measured
+				if session := c.selectedSessionLocked(); session != nil && session.Device.Path == path {
+					session.Rate = measured
+				}
 				c.opMu.Unlock()
 			}
 		}

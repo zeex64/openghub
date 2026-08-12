@@ -91,12 +91,61 @@ func errName(code byte) string {
 // on a receiver). All calls are serialised by mu so request/response pairs on
 // the shared hidraw fd never interleave.
 type Device struct {
-	mu      sync.Mutex
-	f       *os.File
-	Path    string // /dev/hidrawN
-	Index   byte   // HID++ device index
-	Name    string // HID name from sysfs, if known
-	Timeout time.Duration
+	mu           sync.Mutex
+	f            *os.File
+	Path         string // /dev/hidrawN
+	Index        byte   // HID++ device index
+	Name         string // HID name from sysfs, if known
+	VendorID     uint16
+	ProductID    uint16
+	Serial       string
+	PhysicalID   string
+	PhysicalSlot byte
+	Timeout      time.Duration
+}
+
+// DeviceIdentity is stable application-facing metadata for one HID++ endpoint.
+// Receiver slots include Index so multiple paired devices remain distinct.
+type DeviceIdentity struct {
+	ID           string
+	Path         string
+	Index        byte
+	Name         string
+	VendorID     uint16
+	ProductID    uint16
+	Serial       string
+	PhysicalID   string
+	PhysicalSlot byte
+}
+
+func (d *Device) Identity() DeviceIdentity {
+	id := ""
+	if d.PhysicalID != "" {
+		// Receiver and paired-child hidraw nodes report different USB product
+		// IDs and serials, but share one physical route and HID++ slot.
+		slot := d.Index
+		if d.PhysicalSlot != 0 {
+			slot = d.PhysicalSlot
+		}
+		id = fmt.Sprintf("hid:%s:%02x", d.PhysicalID, slot)
+	} else {
+		stable := d.Serial
+		if stable == "" {
+			stable = d.Path
+		}
+		id = fmt.Sprintf("%04x:%04x:%s:%02x", d.VendorID, d.ProductID, stable, d.Index)
+	}
+	return DeviceIdentity{
+		ID:           id,
+		Path:         d.Path,
+		Index:        d.Index,
+		Name:         d.Name,
+		VendorID:     d.VendorID,
+		ProductID:    d.ProductID,
+		Serial:       d.Serial,
+		PhysicalID:   d.PhysicalID,
+		PhysicalSlot: d.PhysicalSlot,
+	}
 }
 
 // Open opens a hidraw node for HID++ traffic. The caller is responsible for

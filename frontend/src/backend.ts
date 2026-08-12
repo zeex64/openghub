@@ -3,6 +3,20 @@ export type DeviceState = {
   battery: number; charging: boolean; hasBattery: boolean; profile: string
   dpiX: number; dpiY: number; pollingRate: number; configuredPollingRate: number
   onboardModeAvailable: boolean; onboardModeEnabled: boolean
+  deviceId: string; modelId: string; capabilities: DeviceCapabilities
+}
+
+export type DeviceCapabilities = {
+  battery: boolean; dpi: boolean; dpiStages: number; pollingRates: number[]
+  profiles: boolean; onboardMode: boolean; buttonMapping: boolean
+  haptics: boolean; gamingSurface: boolean; bhop: boolean
+}
+
+export type DeviceSummary = {
+  id: string; modelId: string; name: string; path: string
+  vendorId: number; productId: number; serial: string
+  connected: boolean; selected: boolean; supported: boolean; permissionDenied: boolean
+  capabilities: DeviceCapabilities
 }
 
 export type Profile = {
@@ -27,7 +41,8 @@ declare global {
   }
 }
 
-const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, onboardModeAvailable: false, onboardModeEnabled: false }
+const emptyCapabilities: DeviceCapabilities = {battery:false,dpi:false,dpiStages:0,pollingRates:[],profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false}
+const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, onboardModeAvailable: false, onboardModeEnabled: false, deviceId:'', modelId:'', capabilities:emptyCapabilities }
 
 async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   const fn = window.go?.main?.DesktopController?.[method]
@@ -40,6 +55,8 @@ async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
 
 export const api = {
   state: () => invoke<DeviceState>('GetDeviceState'),
+  devices: () => invoke<DeviceSummary[]>('GetDevices'),
+  selectDevice: (id: string) => invoke<DeviceState>('SelectDevice', id),
   profiles: () => invoke<Profile[]>('GetProfiles'),
   updateDPI: (sector: number, x: number, y: number) => invoke<void>('UpdateDPI', sector, x, y),
   updateDPIStage: (sector: number, stage: number, x: number, y: number, enabled: boolean, makeDefault: boolean) => invoke<number>('UpdateDPIStage', sector, stage, x, y, enabled, makeDefault),
@@ -61,4 +78,8 @@ export const api = {
 
 export function onDeviceUpdate(callback: (state: DeviceState) => void) {
   return window.runtime?.EventsOn?.('device:update', data => callback(data as DeviceState))
+}
+
+export function onDevicesUpdate(callback: (devices: DeviceSummary[]) => void) {
+  return window.runtime?.EventsOn?.('devices:update', data => callback(data as DeviceSummary[]))
 }

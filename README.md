@@ -137,10 +137,10 @@ system Go installation.
 
 ## How it works
 
-The Go backend discovers Logitech HID++ devices through `/dev/hidraw`, resolves
-their runtime HID++ feature table, and serializes device operations. The
-multi-device transition is introducing explicit device adapters so the React
-frontend can display only the capabilities supported by the selected mouse.
+The Go backend discovers Logitech HID++ devices through `/dev/hidraw`, keeps a
+separate session for each endpoint, resolves their runtime feature tables, and
+matches them to explicit model drivers. The React frontend uses those reported
+capabilities to display only the pages supported by the selected mouse.
 
 For the PRO X 2 Superstrike, openGhub can:
 
@@ -172,11 +172,22 @@ openghub -profiles     Onboard profile and control-sector summary
 openghub -measurerate  Measure real input reports while moving the mouse
 openghub -scan         List Logitech hidraw nodes and HID++ responses
 openghub -bhop-probe   Read-only Superstrike BunnyHopping feature probe
+openghub -capture-fixture FILE -device MODEL
+                        Save identity, capabilities, feature table, and raw
+                        onboard sectors without changing the mouse
 ```
 
-The `-probe` and `-scan` output are the best starting point when requesting a
-new device. The BunnyHopping probe is Superstrike-specific and intentionally
-avoids the verified setter, function 2.
+The fixture capture is the preferred starting point for a new device. Close the
+desktop app first so another process cannot consume HID++ replies, then run:
+
+```sh
+./openghub -capture-fixture testdata/device-fixtures/g502-hero.json -device 046d:c08b
+```
+
+The command only uses getters and raw profile-memory reads. It will not replace
+an existing file. Inspect the generated identity and serial fields before
+sharing or committing it. The BunnyHopping probe is Superstrike-specific and
+intentionally avoids the verified setter, function 2.
 
 ## Adding another Logitech mouse
 
@@ -185,10 +196,10 @@ by its firmware. Include the following information in a device-support issue:
 
 1. The model name printed on the device.
 2. The USB identifier from `lsusb`, such as `046d:c08b`.
-3. The complete output from:
+3. A read-only fixture captured with:
 
    ```sh
-   ./openghub -probe
+   ./openghub -capture-fixture g502-hero.json -device 046d:c08b
    ```
 
 4. Whether the mouse is connected by cable, LIGHTSPEED receiver, Bluetooth,

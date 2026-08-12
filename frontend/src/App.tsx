@@ -1,11 +1,8 @@
 import { type ReactElement, lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { api, AdvancedSettings, ButtonPayload, Choices, DeviceState, DPIStage, Haptics, onDeviceUpdate, Profile } from './backend'
+import { api, AdvancedSettings, ButtonPayload, Choices, DeviceState, DeviceSummary, DPIStage, Haptics, onDevicesUpdate, onDeviceUpdate, Profile } from './backend'
 import productImage from './productImage'
 import productSideImage from './productSideImage'
-import g502TopImage from './assets/devices/g502-se-hero-top.webp'
-import g502SideImage from './assets/devices/g502-se-hero-side.webp'
-import g502XTopImage from './assets/devices/g502-x-top.webp'
-import g502XSideImage from './assets/devices/g502-x-side.webp'
+import { catalogEntryFor, deviceCatalog } from './devices'
 import { primaryButtonPaths } from './mouseButtonPaths'
 import { sideButtonPaths } from './sideButtonPaths'
 import { wheelButtonPath } from './wheelButtonPath'
@@ -112,21 +109,6 @@ function MouseSideArt({interactive=false,selected,onSelect,assignments=[]}: {int
   return <><img className="mouse-side-art" src={productSideImage} alt="PRO X2 Superstrike side view" draggable="false"/>{interactive&&<svg className="side-button-overlay" viewBox="70 399 974 311" role="group" aria-label="Side mouse buttons"><defs><pattern id="side-control-hatch" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line className="button-hatch-line compact" x1="0" y1="0" x2="0" y2="12"/></pattern></defs>{controls.map(control=>{const assignment=assignments[control.index]||'Unassigned',centerX=control.label[0]+135;return <g key={control.index} role="button" tabIndex={0} aria-label={`Select ${control.name}`} className={`control-vector-group ${selected===control.index?'selected':''}`} onClick={()=>onSelect?.(control.index)} onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();onSelect?.(control.index)}}}><path d={control.path} transform={control.transform} className="side-button-vector"/><path d={control.path} transform={control.transform} className="control-vector-hatch side"/><g className="control-callout compact mapping"><line x1={control.anchor[0]} y1={control.anchor[1]} x2={control.edge[0]} y2={control.edge[1]}/><circle cx={control.anchor[0]} cy={control.anchor[1]} r="5"/><rect x={control.label[0]} y={control.label[1]} width="270" height="86"/><text className="title" textAnchor="middle" x={centerX} y={control.label[1]+27}>{control.name}</text><text className="kicker" textAnchor="middle" x={centerX} y={control.label[1]+49}>MAPPED TO</text><text className="assignment" textAnchor="middle" x={centerX} y={control.label[1]+72} textLength={assignment.length>18?240:undefined} lengthAdjust="spacingAndGlyphs">{assignment}</text></g></g>})}</svg>}</>
 }
 
-type CatalogDevice = {
-  id: string
-  name: string
-  family: string
-  availability: 'supported' | 'development'
-  image?: string
-  sideImage?: string
-}
-
-const deviceCatalog: CatalogDevice[] = [
-  {id:'superstrike',name:'PRO X2 Superstrike',family:'PRO Series',availability:'supported',image:productImage},
-  {id:'g502-se-hero',name:'G502 HERO / SE',family:'G Series',availability:'development',image:g502TopImage,sideImage:g502SideImage},
-  {id:'g502-x',name:'G502 X',family:'G Series',availability:'development',image:g502XTopImage,sideImage:g502XSideImage},
-]
-
 function GenericMouseArt() {
   return <svg className="catalog-mouse-placeholder" viewBox="0 0 260 390" aria-hidden="true">
     <path d="M130 24c-55 0-88 42-88 108v117c0 74 34 117 88 117s88-43 88-117V132c0-66-33-108-88-108Z"/>
@@ -136,12 +118,14 @@ function GenericMouseArt() {
   </svg>
 }
 
-function DeviceLibrary({state,onOpen}: {state:DeviceState;onOpen:()=>void}) {
-  const devices=deviceCatalog.map(device=>({
-    ...device,
-    connected:device.id==='superstrike'&&state.connected,
-    accessBlocked:device.id==='superstrike'&&state.permissionDenied,
-  })).sort((a,b)=>Number(b.connected)-Number(a.connected))
+function DeviceLibrary({state,connectedDevices,onOpen}: {state:DeviceState;connectedDevices:DeviceSummary[];onOpen:(id:string)=>void}) {
+
+  const uniqueConnected=[...new Map(connectedDevices.map(device=>[device.id,device])).values()]
+  const connectedCards=uniqueConnected.map(connected=>({
+    definition:catalogEntryFor(connected),connected,
+  }))
+  const disconnectedCards=deviceCatalog.filter(definition=>!uniqueConnected.some(connected=>catalogEntryFor(connected)?.id===definition.id)).map(definition=>({definition,connected:undefined}))
+  const devices=[...connectedCards,...disconnectedCards]
   const supportedCount=deviceCatalog.filter(device=>device.availability==='supported').length
   return <div className="device-library page-enter">
     <header className="device-library-intro">
@@ -149,13 +133,15 @@ function DeviceLibrary({state,onOpen}: {state:DeviceState;onOpen:()=>void}) {
       <div className={`library-scan-state ${state.permissionDenied?'blocked':''}`}><i/><span><strong>{state.permissionDenied?'Device access required':state.connected?'1 device ready':'Looking for devices'}</strong><small>{state.permissionDenied?'Reconnect after installing the access rule':state.connected?'Select it to open its settings':'Connect by cable or wireless receiver'}</small></span></div>
     </header>
     <section className="device-catalog" aria-label="Supported devices">
-      {devices.map(device=>{
-        const ready=device.connected&&!device.accessBlocked
-        const status=device.availability==='development'?'In development':device.accessBlocked?'Access required':device.connected?'Connected':'Not connected'
-        return <article key={device.id} role={ready?'button':undefined} tabIndex={ready?0:undefined} aria-label={ready?`Open ${device.name}`:undefined} className={`device-card device-${device.id} ${ready?'connected':''} ${device.availability==='development'?'development':''}`} onClick={ready?onOpen:undefined} onKeyDown={ready?event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();onOpen()}}:undefined}>
+      {devices.map(({definition,connected},index)=>{
+        const display=definition||{id:connected?.modelId||'unknown',name:connected?.name||'Logitech mouse',family:'Logitech HID++',availability:'development' as const,image:undefined}
+        const accessBlocked=connected?.permissionDenied||false,ready=Boolean(connected?.supported)&&!accessBlocked
+        const status=connected&&!connected.supported?'Detected · support in development':display.availability==='development'?'In development':accessBlocked?'Access required':connected?'Connected':'Not connected'
+        const open=()=>connected&&onOpen(connected.id)
+        return <article key={connected?.id||`${display.id}-${index}`} role={ready?'button':undefined} tabIndex={ready?0:undefined} aria-label={ready?`Open ${display.name}`:undefined} className={`device-card device-${display.id} ${ready?'connected':''} ${display.availability==='development'?'development':''}`} onClick={ready?open:undefined} onKeyDown={ready?event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open()}}:undefined}>
           <div className="device-card-status"><i/><span>{status}</span></div>
-          <div className="device-card-visual">{device.image?<img src={device.image} alt="" draggable="false"/>:<GenericMouseArt/>}</div>
-          <footer><div><span>{device.family}</span><strong>{device.name}</strong></div>{device.availability==='development'?<small>Support is planned</small>:<span className={`device-card-action ${ready?'ready':''}`}>{ready?'Open device':'Waiting for connection'}</span>}</footer>
+          <div className="device-card-visual">{display.image?<img src={display.image} alt="" draggable="false"/>:<GenericMouseArt/>}</div>
+          <footer><div><span>{display.family}</span><strong>{display.name}</strong></div>{display.availability==='development'?<small>{connected?'Detected for development':'Support is planned'}</small>:<span className={`device-card-action ${ready?'ready':''}`}>{ready?'Open device':'Waiting for connection'}</span>}</footer>
         </article>
       })}
     </section>
@@ -360,16 +346,27 @@ function Loader({text}: {text:string}) { return <div className="loader"><i/><spa
 function OnboardModeLock({onOpenProfiles}: {onOpenProfiles:()=>void}) { return <div className="onboard-global-lock"><section><span>ONBOARD MEMORY MODE</span><h2>Settings are locked</h2><p>The mouse is running its stored hardware profile. Turn onboard memory off before changing settings in openGhub.</p><button className="button primary" onClick={onOpenProfiles}>Open Profiles</button></section></div> }
 
 export default function App() {
-  const [page,setPage] = useState<Page>('dashboard'), [state,setState] = useState<DeviceState>({connected:false,permissionDenied:false,name:'',path:'',battery:0,charging:false,hasBattery:false,profile:'',dpiX:0,dpiY:0,pollingRate:0,configuredPollingRate:0,onboardModeAvailable:false,onboardModeEnabled:false}), [toasts,setToasts] = useState<Toast[]>([]), [modelPrepared,setModelPrepared] = useState(false), [showDeviceLibrary,setShowDeviceLibrary] = useState(true)
+  const emptyCapabilities={battery:false,dpi:false,dpiStages:0,pollingRates:[],profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false}
+  const [page,setPage] = useState<Page>('dashboard'), [state,setState] = useState<DeviceState>({connected:false,permissionDenied:false,name:'',path:'',battery:0,charging:false,hasBattery:false,profile:'',dpiX:0,dpiY:0,pollingRate:0,configuredPollingRate:0,onboardModeAvailable:false,onboardModeEnabled:false,deviceId:'',modelId:'',capabilities:emptyCapabilities}), [devices,setDevices] = useState<DeviceSummary[]>([]), [toasts,setToasts] = useState<Toast[]>([]), [modelPrepared,setModelPrepared] = useState(false), [showDeviceLibrary,setShowDeviceLibrary] = useState(true)
   const notify = useCallback((text:string,error=false) => { const id=Date.now(); setToasts(t=>[...t,{id,text,error}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),3200) },[])
   const markModelPrepared = useCallback(() => setModelPrepared(true), [])
-  useEffect(() => { api.state().then(setState).catch(()=>{}); const off=onDeviceUpdate(setState); return () => off?.() },[])
-  const nav = useMemo(() => [{id:'dashboard' as Page,label:'Home'},{id:'dpi' as Page,label:'DPI'},{id:'profiles' as Page,label:'Profiles'},{id:'buttons' as Page,label:'Button Mapping'},{id:'haptics' as Page,label:'Haptics'},{id:'advanced' as Page,label:'Advanced'}],[])
+  useEffect(() => { api.state().then(setState).catch(()=>{});api.devices().then(setDevices).catch(()=>{});const offState=onDeviceUpdate(setState),offDevices=onDevicesUpdate(setDevices);return()=>{offState?.();offDevices?.()} },[])
+  const nav = useMemo(() => {
+    const capabilities=state.capabilities
+    return [
+      {id:'dashboard' as Page,label:'Home',visible:true},
+      {id:'dpi' as Page,label:'DPI',visible:capabilities.dpi},
+      {id:'profiles' as Page,label:'Profiles',visible:capabilities.profiles},
+      {id:'buttons' as Page,label:'Button Mapping',visible:capabilities.buttonMapping},
+      {id:'haptics' as Page,label:'Haptics',visible:capabilities.haptics},
+      {id:'advanced' as Page,label:'Advanced',visible:capabilities.gamingSurface||capabilities.bhop},
+    ].filter(item=>item.visible)
+  },[state.capabilities])
   const view = page === 'dpi' ? <DPIPage notify={notify}/> : page === 'profiles' ? <ProfilesPage notify={notify} state={state} onModeChanged={enabled=>setState(current=>({...current,onboardModeEnabled:enabled}))}/> : page === 'buttons' ? <Buttons notify={notify}/> : page === 'haptics' ? <HapticsPage notify={notify}/> : <AdvancedPage notify={notify}/>
   const dpi = state.dpiX === state.dpiY ? state.dpiX : `${state.dpiX}/${state.dpiY}`
-  const libraryActive=showDeviceLibrary||!state.connected
+  const libraryActive=showDeviceLibrary||(!state.connected&&devices.length===0)
   const modeLocked=state.onboardModeAvailable&&state.onboardModeEnabled
-  const openDevice=()=>{setPage('dashboard');setShowDeviceLibrary(false)}
+  const openDevice=async(id:string)=>{try{setState(await api.selectDevice(id));setPage('dashboard');setShowDeviceLibrary(false)}catch(error){notify(String(error),true)}}
   return <div className="hub-shell">
     <section className={`hub-workspace ${libraryActive?'library-mode':''}`}>
       <header className="hub-header">
@@ -378,7 +375,7 @@ export default function App() {
         {!libraryActive&&<nav className="feature-tabs">{nav.map(n=><button key={n.id} className={page===n.id?'active':''} onClick={()=>setPage(n.id)}><span>{n.label}</span></button>)}</nav>}
       </header>
       <main className="content">
-        {libraryActive?<DeviceLibrary state={state} onOpen={openDevice}/>:<><div className={`persistent-home ${modelPrepared && page === 'dashboard' ? 'visible' : 'hidden'}`}><Dashboard state={state} notify={notify} active={modelPrepared && page === 'dashboard'} onModelPrepared={markModelPrepared}/></div>{page === 'dashboard' ? !modelPrepared&&<Loader text="Preparing device view"/> : view}{modeLocked&&page!=='profiles'&&<OnboardModeLock onOpenProfiles={()=>setPage('profiles')}/>}</>}
+        {libraryActive?<DeviceLibrary state={state} connectedDevices={devices} onOpen={openDevice}/>:<><div className={`persistent-home ${modelPrepared && page === 'dashboard' ? 'visible' : 'hidden'}`}><Dashboard state={state} notify={notify} active={modelPrepared && page === 'dashboard'} onModelPrepared={markModelPrepared}/></div>{page === 'dashboard' ? !modelPrepared&&<Loader text="Preparing device view"/> : view}{modeLocked&&page!=='profiles'&&<OnboardModeLock onOpenProfiles={()=>setPage('profiles')}/>}</>}
       </main>
       {!libraryActive&&<footer className="device-strip">
         <div className="strip-tile"><Icon name="signal"/><span>Polling rate</span><strong>{state.configuredPollingRate ? `${state.configuredPollingRate} Hz` : '—'}</strong></div>

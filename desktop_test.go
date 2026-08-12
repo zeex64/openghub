@@ -1,9 +1,11 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
+	"openghub/internal/devices"
 	"openghub/internal/hidpp"
 )
 
@@ -57,10 +59,10 @@ func TestStoredDefaultDPIRejectsDisabledStage(t *testing.T) {
 
 func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "openghub", "settings.json")
-	want := storedPreferences{Superstrike: advancedPreferences{
+	want := storedPreferences{Devices: map[string]advancedPreferences{"superstrike/unit-1": {
 		GamingSurfaceMode: intPointer(int(hidpp.GamingSurfaceOff)),
 		BhopWindowMS:      intPointer(0),
-	}}
+	}}}
 	if err := writeStoredPreferences(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +70,39 @@ func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Superstrike.GamingSurfaceMode == nil || *got.Superstrike.GamingSurfaceMode != int(hidpp.GamingSurfaceOff) {
-		t.Fatalf("surface preference = %v, want off", got.Superstrike.GamingSurfaceMode)
+	advanced := got.Devices["superstrike/unit-1"]
+	if advanced.GamingSurfaceMode == nil || *advanced.GamingSurfaceMode != int(hidpp.GamingSurfaceOff) {
+		t.Fatalf("surface preference = %v, want off", advanced.GamingSurfaceMode)
 	}
-	if got.Superstrike.BhopWindowMS == nil || *got.Superstrike.BhopWindowMS != 0 {
-		t.Fatalf("bhop preference = %v, want explicit off", got.Superstrike.BhopWindowMS)
+	if advanced.BhopWindowMS == nil || *advanced.BhopWindowMS != 0 {
+		t.Fatalf("bhop preference = %v, want explicit off", advanced.BhopWindowMS)
+	}
+}
+
+func TestStoredPreferencesMigratesLegacySuperstrike(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"superstrike":{"gamingSurfaceMode":4,"bhopWindowMs":400}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readStoredPreferences(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, ok := got.Devices["superstrike"]
+	if !ok || advanced.GamingSurfaceMode == nil || *advanced.GamingSurfaceMode != 4 || advanced.BhopWindowMS == nil || *advanced.BhopWindowMS != 400 {
+		t.Fatalf("migrated preferences = %+v", got)
+	}
+	if got.Version != storedPreferencesVersion || got.LegacySuperstrike != nil {
+		t.Fatalf("migration metadata = %+v", got)
+	}
+}
+
+func TestPreferenceKeysPreferSerialThenModel(t *testing.T) {
+	identity := hidpp.DeviceIdentity{Name: "PRO X2 SUPERSTRIIKE", Serial: "unit-7"}
+	session := &DeviceSession{Driver: devices.Match(identity, devices.FeatureSet{}), Identity: identity}
+	keys := preferenceLookupKeys(session)
+	if len(keys) != 2 || keys[0] != "superstrike/unit-7" || keys[1] != "superstrike" {
+		t.Fatalf("preferenceLookupKeys() = %v", keys)
 	}
 }
 

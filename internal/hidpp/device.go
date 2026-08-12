@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
-
-const logitechVendor = "046D"
 
 // Discover scans /dev/hidraw* for Logitech nodes that answer an HID++ 2.0 ping,
 // returning an open Device for each. Nodes that need root we silently skip and
@@ -20,8 +19,8 @@ func Discover() (devices []*Device, permDenied bool, err error) {
 	}
 	for _, node := range nodes {
 		base := filepath.Base(node)
-		hidID, hidName := sysfsInfo(base)
-		if !strings.Contains(strings.ToUpper(hidID), logitechVendor) {
+		info := sysfsInfo(base)
+		if info.VendorID != 0x046D {
 			continue
 		}
 		f, openErr := os.OpenFile(node, os.O_RDWR, 0)
@@ -50,7 +49,12 @@ func Discover() (devices []*Device, permDenied bool, err error) {
 				continue
 			}
 			d.Timeout = 4 * time.Second // normal operations
-			d.Name = hidName
+			d.Name = info.Name
+			d.VendorID = info.VendorID
+			d.ProductID = info.ProductID
+			d.Serial = info.Serial
+			d.PhysicalID = info.PhysicalID
+			d.PhysicalSlot = info.PhysicalSlot
 			devices = append(devices, d)
 			break // one working index per node is enough
 		}
@@ -58,21 +62,82 @@ func Discover() (devices []*Device, permDenied bool, err error) {
 	return devices, permDenied, nil
 }
 
-// sysfsInfo reads HID_ID and HID_NAME for a hidraw node from sysfs.
-func sysfsInfo(base string) (id, name string) {
+type sysfsDeviceInfo struct {
+	Name         string
+	Serial       string
+	VendorID     uint16
+	ProductID    uint16
+	PhysicalID   string
+	PhysicalSlot byte
+}
+
+// sysfsInfo reads identity metadata for a hidraw node from sysfs.
+func sysfsInfo(base string) sysfsDeviceInfo {
 	data, err := os.ReadFile(fmt.Sprintf("/sys/class/hidraw/%s/device/uevent", base))
 	if err != nil {
-		return "", ""
+		return sysfsDeviceInfo{}
 	}
+	var info sysfsDeviceInfo
 	for _, line := range strings.Split(string(data), "\n") {
 		switch {
 		case strings.HasPrefix(line, "HID_ID="):
-			id = strings.TrimPrefix(line, "HID_ID=")
+			parts := strings.Split(strings.TrimPrefix(line, "HID_ID="), ":")
+			if len(parts) == 3 {
+				if value, parseErr := strconv.ParseUint(parts[1], 16, 16); parseErr == nil {
+					info.VendorID = uint16(value)
+				}
+				if value, parseErr := strconv.ParseUint(parts[2], 16, 16); parseErr == nil {
+					info.ProductID = uint16(value)
+				}
+			}
 		case strings.HasPrefix(line, "HID_NAME="):
-			name = strings.TrimPrefix(line, "HID_NAME=")
+			info.Name = strings.TrimPrefix(line, "HID_NAME=")
+		case strings.HasPrefix(line, "HID_UNIQ="):
+			info.Serial = strings.TrimPrefix(line, "HID_UNIQ=")
+		case strings.HasPrefix(line, "HID_PHYS="):
+			physical := strings.TrimPrefix(line, "HID_PHYS=")
+			info.PhysicalID = normalizePhysicalID(physical)
+			info.PhysicalSlot = physicalDeviceSlot(physical)
 		}
 	}
-	return id, name
+	return info
+}
+
+func physicalDeviceSlot(value string) byte {
+	index := strings.LastIndex(value, "/input")
+	if index < 0 {
+		return 0
+	}
+	suffix := value[index+len("/input"):]
+	colon := strings.LastIndex(suffix, ":")
+	if colon < 0 || colon == len(suffix)-1 {
+		return 0
+	}
+	slot, err := strconv.ParseUint(suffix[colon+1:], 10, 8)
+	if err != nil || slot == 0 {
+		return 0
+	}
+	return byte(slot)
+}
+
+func normalizePhysicalID(value string) string {
+	// A physical mouse can expose several HID interfaces as .../input0,
+	// .../input1 or a paired child as .../input2:1. Strip that interface suffix
+	// so the receiver endpoint and child endpoint share one physical route.
+	if index := strings.LastIndex(value, "/input"); index >= 0 {
+		suffix := value[index+len("/input"):]
+		valid := suffix != ""
+		for _, character := range suffix {
+			if character != ':' && (character < '0' || character > '9') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return value[:index]
+		}
+	}
+	return value
 }
 
 // DeviceName reads the marketing name via feature 0x0005 (DeviceNameType),

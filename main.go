@@ -1,12 +1,13 @@
 // Command openghub is a self-contained Linux control panel for supported Logitech
-// PRO X 2 Superstrike. It speaks HID++ 2.0 directly over /dev/hidraw and renders
-// a Fyne GUI — no G HUB, no background daemon, one binary.
+// Logitech gaming mice. It speaks HID++ 2.0 directly over /dev/hidraw and
+// renders a Wails desktop UI — no G HUB, no background daemon, one binary.
 //
 // Without flags it launches the GUI. A few headless flags are provided for
 // diagnostics / support (see -h).
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"openghub/internal/devices"
 	"openghub/internal/hidpp"
 )
 
@@ -27,6 +29,8 @@ func main() {
 	profiles := flag.Bool("profiles", false, "headless: list all profiles + control sectors (read-only)")
 	measurerate := flag.Bool("measurerate", false, "measure the ACTUAL report rate from kernel input events (move the mouse)")
 	scan := flag.Bool("scan", false, "headless: list Logitech hidraw nodes + HID++ ping results")
+	fixturePath := flag.String("capture-fixture", "", "headless: save a read-only device snapshot as JSON (use - for stdout)")
+	fixtureDevice := flag.String("device", "", "select a diagnostic device by model id, USB id, name, or hidraw path")
 	flag.Parse()
 
 	switch {
@@ -42,9 +46,103 @@ func main() {
 		runMeasureRate()
 	case *scan:
 		runScan()
+	case *fixturePath != "":
+		runCaptureFixture(*fixturePath, *fixtureDevice)
 	default:
 		runDesktop()
 	}
+}
+
+func runCaptureFixture(path, selector string) {
+	discovered, permissionDenied, err := hidpp.Discover()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "discover devices:", err)
+		os.Exit(1)
+	}
+	defer func() {
+		for _, device := range discovered {
+			device.Close()
+		}
+	}()
+	if len(discovered) == 0 {
+		if permissionDenied {
+			fmt.Fprintln(os.Stderr, "device access denied; install the openGhub udev rule and reconnect the mouse")
+		} else {
+			fmt.Fprintln(os.Stderr, "no Logitech HID++ device responded")
+		}
+		os.Exit(1)
+	}
+	device, selectErr := selectFixtureDevice(discovered, selector)
+	if selectErr != nil {
+		fmt.Fprintln(os.Stderr, selectErr)
+		os.Exit(2)
+	}
+	fixture := devices.CaptureFixture(device)
+	if err := fixture.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "captured fixture is incomplete:", err)
+		for _, captureErr := range fixture.Errors {
+			fmt.Fprintln(os.Stderr, "  ", captureErr)
+		}
+		os.Exit(1)
+	}
+	data, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "encode fixture:", err)
+		os.Exit(1)
+	}
+	data = append(data, '\n')
+	if path == "-" {
+		_, _ = os.Stdout.Write(data)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "create fixture directory:", err)
+		os.Exit(1)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create fixture:", err)
+		os.Exit(1)
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		fmt.Fprintln(os.Stderr, "write fixture:", err)
+		os.Exit(1)
+	}
+	if err := file.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "close fixture:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("saved read-only fixture for %s to %s\n", fixture.Identity.Name, path)
+}
+
+func selectFixtureDevice(discovered []*hidpp.Device, selector string) (*hidpp.Device, error) {
+	if selector == "" {
+		if len(discovered) == 1 {
+			return discovered[0], nil
+		}
+		return nil, fmt.Errorf("%d devices responded; use -device with a model id, USB id, name, or path", len(discovered))
+	}
+	want := strings.ToLower(strings.TrimSpace(selector))
+	var matches []*hidpp.Device
+	for _, device := range discovered {
+		identity := device.Identity()
+		if marketingName, err := device.DeviceName(); err == nil && marketingName != "" {
+			identity.Name = marketingName
+		}
+		usbID := fmt.Sprintf("%04x:%04x", identity.VendorID, identity.ProductID)
+		driverID := devices.Match(identity, devices.ProbeFeatures(device)).ID()
+		if strings.EqualFold(identity.Path, selector) || strings.EqualFold(usbID, want) || strings.EqualFold(driverID, want) || strings.Contains(strings.ToLower(identity.Name), want) {
+			matches = append(matches, device)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no connected device matches %q", selector)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("%d devices match %q; select one by its /dev/hidraw path", len(matches), selector)
+	}
+	return matches[0], nil
 }
 
 // runBHopProbe resolves BunnyHopping and calls read functions fn0 and fn1.
