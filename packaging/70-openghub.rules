@@ -1,0 +1,8 @@
+# Grant the logged-in user read/write access to Logitech HID++ devices so
+# openGhub can run without root.
+#
+# This file must be numbered below systemd's 73-seat-late.rules so the uaccess
+# tag becomes a per-user ACL.
+
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0660", TAG+="uaccess"

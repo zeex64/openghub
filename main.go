@@ -1,4 +1,4 @@
-// Command superstrike is a self-contained Linux control panel for the Logitech
+// Command openghub is a self-contained Linux control panel for supported Logitech
 // PRO X 2 Superstrike. It speaks HID++ 2.0 directly over /dev/hidraw and renders
 // a Fyne GUI — no G HUB, no background daemon, one binary.
 //
@@ -17,12 +17,12 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"superstrike/internal/hidpp"
+	"openghub/internal/hidpp"
 )
 
 func main() {
 	probe := flag.Bool("probe", false, "headless: print device info + HID++ feature table")
-	bhopProbe := flag.Bool("bhop-probe", false, "headless: conservatively probe BunnyHopping feature 0x80E0 (read-only candidates)")
+	bhopProbe := flag.Bool("bhop-probe", false, "headless: read BunnyHopping feature 0x80E0 without changing it")
 	profile := flag.Bool("profile", false, "headless: dump the active onboard profile (read-only)")
 	profiles := flag.Bool("profiles", false, "headless: list all profiles + control sectors (read-only)")
 	measurerate := flag.Bool("measurerate", false, "measure the ACTUAL report rate from kernel input events (move the mouse)")
@@ -47,14 +47,9 @@ func main() {
 	}
 }
 
-// runBHopProbe resolves the undocumented BunnyHopping feature and calls only
-// the two functions that follow Logitech's usual read-side convention:
-// fn0=get capabilities and fn2=get current configuration. In particular, it
-// deliberately never calls fn1, which is conventionally the setter.
-//
-// Both reads are repeated. Stable replies are easier to distinguish from
-// counters or asynchronous state, and the raw bytes can be compared with a
-// USB capture from G HUB without baking an unverified layout into the driver.
+// runBHopProbe resolves BunnyHopping and calls read functions fn0 and fn1.
+// Captures established that fn2 is the setter, so it must never be used by a
+// read-only diagnostic.
 func runBHopProbe() {
 	d := openMouse()
 	defer d.Close()
@@ -63,7 +58,7 @@ func runBHopProbe() {
 	marketingName, _ := d.DeviceName()
 	f, err := d.FeatureIndex(hidpp.FeatBunnyHopping)
 
-	fmt.Println("Superstrike Bunny Hopping diagnostic (conservative mode)")
+	fmt.Println("openGhub Superstrike Bunny Hopping diagnostic (conservative mode)")
 	fmt.Printf("device: path=%s index=0x%02X hid-name=%q\n", d.Path, d.Index, d.Name)
 	if pingErr == nil {
 		fmt.Printf("HID++: %s\n", ver)
@@ -82,9 +77,9 @@ func runBHopProbe() {
 
 	fmt.Printf("feature: id=0x%04X index=0x%02X obsolete=%v hidden=%v engineering=%v\n",
 		f.ID, f.Index, f.Obsolete, f.Hidden, f.Engineering)
-	fmt.Println("calls: fn0 and fn2 only; fn1 (probable setter) is intentionally skipped")
+	fmt.Println("calls: fn0 and fn1 only; fn2 is the verified setter and is intentionally skipped")
 
-	for _, fn := range []byte{0x00, 0x02} {
+	for _, fn := range []byte{0x00, 0x01} {
 		for attempt := 1; attempt <= 2; attempt++ {
 			response, callErr := d.Call(f.Index, fn)
 			if callErr != nil {
@@ -95,7 +90,7 @@ func runBHopProbe() {
 		}
 	}
 
-	fmt.Println("done: no probable setter functions were called")
+	fmt.Println("done: the fn2 setter was not called")
 }
 
 func printBHopResponse(fn byte, attempt int, response []byte) {

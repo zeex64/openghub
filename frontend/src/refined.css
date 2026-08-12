@@ -317,6 +317,45 @@ nav .icon { width: 17px; height: 17px; }
 .hub-workspace .haptic-visual { min-height: 520px; }
 .hub-workspace .slider-card { padding: 20px 22px; }
 
+.haptic-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  min-height: 78px; padding: 18px 22px; border-bottom: 1px solid var(--hub-fg-5);
+}
+.haptic-toggle-row span, .haptic-toggle-row small { display: block; }
+.haptic-toggle-row span { font-size: 13px; font-weight: 550; }
+.haptic-toggle-row small { margin-top: 6px; color: var(--hub-fg-35); font-size: 9px; }
+
+.advanced-manager {
+  display: grid; grid-template-columns: 2fr 1fr; gap: 4px;
+  height: 100%; min-height: 0; padding: 4px 10px; background: #151515;
+}
+.advanced-device-panel, .advanced-control-panel { position: relative; min-width: 0; min-height: 0; background: #1e1e20; }
+.advanced-device-panel { overflow: hidden; }
+.advanced-device-panel > header { position: absolute; z-index: 3; top: 26px; left: 28px; }
+.advanced-device-panel > header > span, .advanced-setting-title > span, .advanced-toggle-line > div > span {
+  color: var(--hub-fg-35); font-size: 9px; font-weight: 600; letter-spacing: .08em;
+}
+.advanced-device-panel > header h1 { margin: 8px 0 6px; font-size: 25px; font-weight: 550; }
+.advanced-device-panel > header p { margin: 0; color: var(--hub-fg-35); font-size: 11px; }
+.advanced-device-art { position: absolute; inset: 12% 25% 4%; }
+.advanced-device-art .mouse-art { width: 100%; height: 100%; filter: none; }
+.advanced-device-art .mouse-art img { transform: scale(.8); opacity: .86; }
+.advanced-control-panel { height: 100%; }
+.advanced-settings-list { min-height: 0; overflow: auto; }
+.advanced-setting-group { padding: 24px 22px; border-bottom: 1px solid var(--hub-fg-5); }
+.advanced-setting-title h3, .advanced-toggle-line h3 { margin: 7px 0 5px; font-size: 13px; font-weight: 550; }
+.advanced-setting-title p, .advanced-toggle-line p { margin: 0; color: var(--hub-fg-35); font-size: 9px; line-height: 1.5; }
+.advanced-mode-tabs { height: 42px; margin-top: 20px; border: 1px solid var(--hub-fg-5); }
+.advanced-mode-tabs button { min-height: 40px; }
+.advanced-toggle-line { min-height: 0; padding: 0; border: 0; background: transparent; }
+.advanced-toggle-line > div { padding-right: 16px; }
+.bhop-setting-group > .advanced-disabled-control { margin: 20px -22px -24px; }
+.bhop-setting-group .haptic-setting-row { padding-top: 22px; border-top: 1px solid var(--hub-fg-5); border-bottom: 0; }
+.advanced-disabled-control { opacity: .42; pointer-events: none; }
+.feature-unavailable { margin-top: 18px; padding: 12px 13px; color: var(--hub-fg-35); background: #18181a; font-size: 9px; line-height: 1.55; }
+.advanced-setting-group.unavailable { opacity: .64; }
+.advanced-control-panel > footer .inline-status { padding: 0; }
+
 /* Interactive polling selector. */
 .hub-workspace .device-strip { gap: 4px; padding: 3px 10px; background: #171719; }
 .device-strip .strip-tile {

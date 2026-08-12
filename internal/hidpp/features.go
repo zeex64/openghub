@@ -17,6 +17,8 @@ const (
 	FeatAdjustableDPI  = 0x2201
 	FeatExtAdjDPI      = 0x2202
 	FeatAngleSnap      = 0x2230
+	FeatMouseTuning    = 0x2250
+	FeatWheelStats     = 0x2251
 	FeatReportRate     = 0x8060
 	FeatExtReportRate  = 0x8061
 	FeatBunnyHopping   = 0x80E0
@@ -31,48 +33,48 @@ const (
 // rendered as hex so newly-discovered features (the point of the haptics hunt)
 // are still legible.
 var featureNames = map[uint16]string{
-	0x0000: "IRoot",
-	0x0001: "IFeatureSet",
-	0x0002: "IFeatureInfo",
-	0x0003: "DeviceFwInfo",
-	0x0005: "DeviceNameType",
-	0x0020: "ConfigChange",
-	0x00C2: "DFUControl",
-	0x1000: "BatteryUnifiedLevelStatus",
-	0x1001: "BatteryVoltage",
-	0x1004: "UnifiedBattery",
-	0x1500: "ForcePairing",
-	0x1602: "PasswordOrAuth?",
-	0x1801: "ManufacturingMode",
-	0x1802: "DeviceReset",
-	0x1803: "GPIOAccess",
-	0x1805: "OOBState",
-	0x1806: "ConfigurableDeviceProperties",
-	0x1814: "ChangeHost",
-	0x1817: "LightspeedPrepairing",
-	0x1830: "PowerModes",
-	0x1890: "RFTest",
-	0x1D4B: "WirelessDeviceStatus",
-	0x1E00: "EnableHiddenFeatures",
-	0x19B0: "Haptic",
-	0x1B04: "ReprogControlsV4",
-	0x1B05: "FullKeyCustomization",
-	0x1B0C: "AnalogButtons",          // actuation point, rapid trigger, CLICK HAPTICS
-	0x2201: "AdjustableDPI",
-	0x2202: "ExtendedAdjustableDPI",
-	0x2230: "AngleSnapping",
-	0x2250: "MouseTuning",
-	0x2251: "WheelStats",
-	0x8060: "ReportRate",
-	0x8061: "ExtendedAdjustableReportRate",
-	0x8070: "ColorLEDEffects",
-	0x8071: "RGBEffects",
-	0x8081: "PerKeyLighting",
-	0x8090: "ModeStatus",
-	0x80E0: "BunnyHopping",
-	0x8100: "OnboardProfiles",
-	0x8110: "MouseButtonSpy",
-	0x9403: "FlashUpdate?",
+	0x0000:          "IRoot",
+	0x0001:          "IFeatureSet",
+	0x0002:          "IFeatureInfo",
+	0x0003:          "DeviceFwInfo",
+	0x0005:          "DeviceNameType",
+	0x0020:          "ConfigChange",
+	0x00C2:          "DFUControl",
+	0x1000:          "BatteryUnifiedLevelStatus",
+	0x1001:          "BatteryVoltage",
+	0x1004:          "UnifiedBattery",
+	0x1500:          "ForcePairing",
+	0x1602:          "PasswordOrAuth?",
+	0x1801:          "ManufacturingMode",
+	0x1802:          "DeviceReset",
+	0x1803:          "GPIOAccess",
+	0x1805:          "OOBState",
+	0x1806:          "ConfigurableDeviceProperties",
+	0x1814:          "ChangeHost",
+	0x1817:          "LightspeedPrepairing",
+	0x1830:          "PowerModes",
+	0x1890:          "RFTest",
+	0x1D4B:          "WirelessDeviceStatus",
+	0x1E00:          "EnableHiddenFeatures",
+	0x19B0:          "Haptic",
+	0x1B04:          "ReprogControlsV4",
+	0x1B05:          "FullKeyCustomization",
+	0x1B0C:          "AnalogButtons", // actuation point, rapid trigger, CLICK HAPTICS
+	0x2201:          "AdjustableDPI",
+	0x2202:          "ExtendedAdjustableDPI",
+	0x2230:          "AngleSnapping",
+	FeatMouseTuning: "MouseTuning",
+	FeatWheelStats:  "WheelStats",
+	0x8060:          "ReportRate",
+	0x8061:          "ExtendedAdjustableReportRate",
+	0x8070:          "ColorLEDEffects",
+	0x8071:          "RGBEffects",
+	0x8081:          "PerKeyLighting",
+	0x8090:          "ModeStatus",
+	0x80E0:          "BunnyHopping",
+	0x8100:          "OnboardProfiles",
+	0x8110:          "MouseButtonSpy",
+	0x9403:          "FlashUpdate?",
 }
 
 // FeatureName returns a readable label for a feature id.
@@ -85,11 +87,11 @@ func FeatureName(id uint16) string {
 
 // Feature is one entry of the device's feature table.
 type Feature struct {
-	ID       uint16
-	Index    byte
-	Version  byte
-	Obsolete bool
-	Hidden   bool
+	ID          uint16
+	Index       byte
+	Version     byte
+	Obsolete    bool
+	Hidden      bool
 	Engineering bool
 }
 

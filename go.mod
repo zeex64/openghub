@@ -1,4 +1,4 @@
-module superstrike
+module openghub
 
 go 1.26.3
 

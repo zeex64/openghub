@@ -186,26 +186,48 @@ actuation point, rapid trigger, haptics.")
 - `fn0` getCapabilities → `[flags, buttonCount, maxAct<<2, maxRT<<2,
   maxHaptics<<2, …]`. This unit: 3 buttons reported (only **L=0, R=1** are
   user-accessible), max actuation 10, max rapid-trigger 5, max haptics 5.
-- `fn2` (0x20) getConfig `[button]` → `[button, act<<2, rt<<2|sensFlag,
+- `fn2` (0x20) getConfig `[button]` → `[button, act<<2, rt<<2|enabled,
   haptics<<2]`.
-- `fn1` (0x10) setConfig `[button, act<<2, rt<<2|sensFlag, haptics<<2]`.
+- `fn1` (0x10) setConfig `[button, act<<2, rt<<2|enabled, haptics<<2]`.
 
 Wire encoding: each value is packed in bits 7..2 (`wire = logical << 2`). The
-rapid-trigger byte's **bit 0 is a firmware sensitivity flag that must be
-preserved** across writes, or the device returns INVALID_ARGUMENT. These
-**do** apply live (no profile reload needed).
+rapid-trigger byte's **bit 0 is the enable flag** (`0` disabled, `1` enabled).
+This is independently controllable from the sensitivity in bits 7..2. These
+settings **do** apply live (no profile reload needed).
+
+## Gaming surface mode — `0x2250` MouseTuning
+
+- `fn0` (0x00) get mode `[sensor=0]` → `[sensor, mode, ...]`.
+- `fn1` (0x10) set mode `[sensor=0, mode, 0, 6]`.
+- Mode values are `0x00` = Auto, `0x02` = On, `0x04` = Off.
+- Some firmware/state combinations report `0x01` for On. The app accepts and
+  normalizes that read value to On while continuing to write captured value
+  `0x02`.
+
+G HUB reads `fn0` immediately after each write. On Linux the getter has also
+been observed returning the previous mode after the setter acknowledged the
+command. The desktop app retries read-back, but—like DPI and polling rate—does
+not treat a stale getter as a failed write. Because this is volatile device
+state, openGhub stores an explicitly selected mode in its user configuration
+and reapplies it after reconnecting or restarting.
 
 ## Scroll-wheel Bhop mode — `0x80E0` BunnyHopping
 
-The device advertises this feature, but its payload layout is not decoded yet.
-G HUB describes it as a scroll-wheel filter: the first wheel event is ignored
+G HUB describes this as a scroll-wheel filter: the first wheel event is ignored
 unless a second event occurs within a configurable 100–1000 ms window.
 
-Run `superstrike -bhop-probe` to collect conservative diagnostic output. The
-probe resolves the runtime feature index, calls probable read functions `fn0`
-and `fn2` twice, and prints the raw response bytes. It intentionally does not
-call probable setter `fn1`. Do not add a setter until its payload has been
-verified against device responses or a G HUB USB capture.
+- `fn2` (0x20) sets the window using one byte in 10 ms units.
+- `0x00` disables Bhop mode; `0x0A` = 100 ms, `0x28` = 400 ms, and `0x64` =
+  1000 ms. The response echoes the applied value.
+- `fn1` (0x10) reads the current window using the same encoding, allowing the
+  app to show the device's initial enabled state and configured window.
+- The window is volatile device state. openGhub persists an explicit enabled
+  window or disabled value and reapplies it after reconnecting or restarting.
+
+The old diagnostic incorrectly treated `fn2` as a probable getter. Sending it
+without parameters actually sends a zero-filled parameter and can disable the
+feature. `superstrike -bhop-probe` now calls read functions `fn0` and `fn1`
+only.
 
 ## Buttons (via the profile, offset 48)
 

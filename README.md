@@ -22,7 +22,8 @@ formats, button layouts, and lighting systems.
 | Device | Connection | Status |
 | --- | --- | --- |
 | Logitech PRO X 2 Superstrike | LIGHTSPEED | **Supported and verified** |
-| Logitech G502 SE HERO (`046d:c08b`) | Wired USB | **Planned / in development** |
+| Logitech G502 HERO / SE (`046d:c08b`) | Wired USB | **Planned / in development** |
+| Logitech G502 X | Wired USB | **Planned / in development** |
 
 The interface currently uses Superstrike-specific artwork and controls. As
 multi-device support lands, openGhub will select the correct pages, button map,
@@ -40,7 +41,10 @@ The current Superstrike build provides:
 - **Device status** — show connection, battery, current DPI, profile, and
   polling information when exposed by the hardware.
 - **Superstrike analog controls** — configure click haptics, actuation point,
-  and rapid trigger through HID++ feature `0x1B0C`.
+  rapid-trigger sensitivity, and rapid-trigger enable state through HID++
+  feature `0x1B0C`.
+- **Advanced Superstrike controls** — select Gaming Surface Auto/On/Off and
+  configure or disable the 100–1000 ms scroll-wheel Bhop filter.
 - **Interactive interface** — a Wails, React, and Three.js desktop UI with a
   device-specific product view.
 
@@ -65,14 +69,13 @@ kept separate so one mouse's profile layout is never assumed safe for another.
 
 ### Download a release
 
-1. Download the latest binary from the [**Releases**](../../releases) page.
-   During the openGhub transition, release binaries may still be named
-   `superstrike`.
+1. Download the latest `openghub` binary from the
+   [**Releases**](../../releases) page.
 
 2. Make the binary executable:
 
    ```sh
-   chmod +x superstrike
+   chmod +x openghub
    ```
 
 3. Install a udev rule so openGhub can communicate with Logitech HID devices
@@ -90,13 +93,13 @@ kept separate so one mouse's profile layout is never assumed safe for another.
 4. Reconnect the mouse, then launch the app:
 
    ```sh
-   ./superstrike
+   ./openghub
    ```
 
 > The rule must sort before systemd's `73-seat-late.rules`, which converts the
 > `uaccess` tag into permission for the signed-in desktop user. The `70-`
 > prefix is intentional. Remove older `99-logitech-superstrike.rules` files if
-> they are still installed.
+> they are still installed from an earlier build.
 
 The desktop window uses the system WebKitGTK runtime. Install
 `libwebkit2gtk-4.1-0` or your distribution's equivalent if it is missing.
@@ -116,7 +119,7 @@ git clone https://github.com/zeex64/linux-superstrike.git
 cd linux-superstrike
 npm --prefix frontend ci --include=dev
 npm --prefix frontend run build
-go build -tags "desktop,production,webkit2_41" -o superstrike .
+go build -tags "desktop,production,webkit2_41" -o openghub .
 ```
 
 Install the current desktop launcher, icon, binary, and udev rule with:
@@ -125,9 +128,8 @@ Install the current desktop launcher, icon, binary, and udev rule with:
 ./packaging/install.sh
 ```
 
-The repository and executable are being renamed incrementally. Existing
-`linux-superstrike`, `superstrike`, and packaging names remain valid during the
-transition to openGhub.
+The repository retains its historical `linux-superstrike` path, while the app,
+executable, desktop launcher, and package metadata use the openGhub name.
 
 If Go is missing, the installer downloads the version declared in `go.mod` to
 the repository's local `.tools` directory. It does not replace or modify the
@@ -165,16 +167,16 @@ desktop app and diagnostic CLI share the same HID++ implementation.
 The current binary also provides command-line diagnostics:
 
 ```text
-superstrike -probe        Device information and complete HID++ feature table
-superstrike -profiles     Onboard profile and control-sector summary
-superstrike -measurerate  Measure real input reports while moving the mouse
-superstrike -scan         List Logitech hidraw nodes and HID++ responses
-superstrike -bhop-probe   Conservative Superstrike BunnyHopping feature probe
+openghub -probe        Device information and complete HID++ feature table
+openghub -profiles     Onboard profile and control-sector summary
+openghub -measurerate  Measure real input reports while moving the mouse
+openghub -scan         List Logitech hidraw nodes and HID++ responses
+openghub -bhop-probe   Read-only Superstrike BunnyHopping feature probe
 ```
 
 The `-probe` and `-scan` output are the best starting point when requesting a
 new device. The BunnyHopping probe is Superstrike-specific and intentionally
-avoids the probable setter function.
+avoids the verified setter, function 2.
 
 ## Adding another Logitech mouse
 
@@ -186,7 +188,7 @@ by its firmware. Include the following information in a device-support issue:
 3. The complete output from:
 
    ```sh
-   ./superstrike -probe
+   ./openghub -probe
    ```
 
 4. Whether the mouse is connected by cable, LIGHTSPEED receiver, Bluetooth,

@@ -37,7 +37,7 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.02
+    renderer.toneMappingExposure = .78
     renderer.domElement.setAttribute('aria-label', 'Interactive 3D model of the PRO X2 Superstrike')
     container.appendChild(renderer.domElement)
 
@@ -57,14 +57,14 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
     const studioEnvironment = environmentTarget.texture
     pmrem.dispose()
 
-    scene.add(new THREE.HemisphereLight(0xf5f7fa, 0x202226, 1.5))
-    const key = new THREE.DirectionalLight(0xfffdf8, 3.45)
-    key.position.set(-4.5, 5.5, 4.8); scene.add(key)
-    const fill = new THREE.DirectionalLight(0xe8f0f7, 1.45)
-    fill.position.set(4.2, 2.8, 4.5); scene.add(fill)
-    const rim = new THREE.DirectionalLight(0xf3f6f8, 1.7)
-    rim.position.set(3.5, 3.8, -4.5); scene.add(rim)
-    const top = new THREE.DirectionalLight(0xffffff, .85)
+    scene.add(new THREE.HemisphereLight(0xdfe5eb, 0x121316, .68))
+    const key = new THREE.DirectionalLight(0xfff4e8, 1.65)
+    key.position.set(-4.5, 5.2, 4.2); scene.add(key)
+    const fill = new THREE.DirectionalLight(0xb9d8f2, .48)
+    fill.position.set(4.5, 2.2, 4.8); scene.add(fill)
+    const rim = new THREE.DirectionalLight(0xd9eaff, 1.05)
+    rim.position.set(3.8, 4.2, -4.8); scene.add(rim)
+    const top = new THREE.DirectionalLight(0xffffff, .26)
     top.position.set(-.5, 7, -.5); scene.add(top)
 
     const manager = new THREE.LoadingManager()
@@ -96,7 +96,7 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
         if (!(child instanceof THREE.Mesh)) return
         const materials = Array.isArray(child.material) ? child.material : [child.material]
         for (const material of materials) {
-          const textured = material as THREE.MeshPhongMaterial
+          const textured = material as THREE.MeshPhongMaterial & THREE.MeshStandardMaterial
           const materialName = material.name.toLowerCase()
           const atlasSlot = materialName.includes('bottompart') ? 0 : materialName.includes('click') ? 1 : materialName.includes('mainbody') ? 2 : -1
           if (atlasSlot >= 0) {
@@ -106,13 +106,18 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
             uv.needsUpdate = true
           }
           if (textured.map) {
-            textured.color.set(0xffffff)
+            textured.color.set(0xeeeeee)
             textured.map.colorSpace = THREE.SRGBColorSpace
             textured.map.anisotropy = renderer.capabilities.getMaxAnisotropy()
+          } else if (materialName.includes('white')) {
+            textured.color.set(0xd0d3d6)
           }
           textured.envMap = studioEnvironment
-          textured.reflectivity = materialName.includes('click') || materialName.includes('bottompart') ? .2 : .12
-          if ('shininess' in textured) textured.shininess = Math.min(textured.shininess || 28, 42)
+          if ('envMapIntensity' in textured) textured.envMapIntensity = materialName.includes('click') ? .46 : .32
+          if ('roughness' in textured) textured.roughness = Math.max(textured.roughness, materialName.includes('click') ? .42 : .52)
+          if ('metalness' in textured && atlasSlot >= 0) textured.metalness = Math.min(textured.metalness, .08)
+          if ('reflectivity' in textured) textured.reflectivity = materialName.includes('click') ? .14 : .08
+          if ('shininess' in textured) textured.shininess = Math.min(textured.shininess || 24, 30)
           textured.needsUpdate = true
         }
       })

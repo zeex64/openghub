@@ -2,6 +2,7 @@ export type DeviceState = {
   connected: boolean; permissionDenied: boolean; name: string; path: string
   battery: number; charging: boolean; hasBattery: boolean; profile: string
   dpiX: number; dpiY: number; pollingRate: number; configuredPollingRate: number
+  onboardModeAvailable: boolean; onboardModeEnabled: boolean
 }
 
 export type Profile = {
@@ -16,7 +17,8 @@ export type ButtonAction = { Kind: number; Code: number; Mods: number; Raw: numb
 export type ButtonPayload = { profileName: string; sector: number; buttons: Array<{index: number; name: string; description: string; action: ButtonAction}> }
 export type Choice = { name: string; code: number }
 export type Choices = { mouse: Choice[]; keys: Choice[]; media: Choice[]; functions: Choice[] }
-export type Haptics = { maxActuation: number; maxRapidTrigger: number; maxHaptics: number; buttons: Array<{index: number; name: string; actuation: number; rapidTrigger: number; haptics: number}> }
+export type Haptics = { maxActuation: number; maxRapidTrigger: number; maxHaptics: number; buttons: Array<{index: number; name: string; actuation: number; rapidTrigger: number; rapidTriggerEnabled: boolean; haptics: number}> }
+export type AdvancedSettings = { gamingSurfaceAvailable: boolean; gamingSurfaceMode: number; bhopAvailable: boolean; bhopKnown: boolean; bhopWindowMs: number }
 
 declare global {
   interface Window {
@@ -25,7 +27,7 @@ declare global {
   }
 }
 
-const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0 }
+const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, onboardModeAvailable: false, onboardModeEnabled: false }
 
 async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   const fn = window.go?.main?.DesktopController?.[method]
@@ -51,6 +53,10 @@ export const api = {
   setButton: (sector: number, index: number, kind: number, code: number, mods: number) => invoke<number>('SetButton', sector, index, kind, code, mods),
   haptics: () => invoke<Haptics>('GetHaptics'),
   setHaptic: (index: number, field: string, value: number) => invoke<void>('SetHaptic', index, field, value),
+  advanced: () => invoke<AdvancedSettings>('GetAdvancedSettings'),
+  setGamingSurface: (mode: number) => invoke<void>('SetGamingSurfaceMode', mode),
+  setBhop: (windowMs: number) => invoke<void>('SetBhopWindow', windowMs),
+  setOnboardMode: (enabled: boolean) => invoke<void>('SetOnboardMode', enabled),
 }
 
 export function onDeviceUpdate(callback: (state: DeviceState) => void) {

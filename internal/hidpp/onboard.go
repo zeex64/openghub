@@ -6,8 +6,9 @@ import "fmt"
 // memory (hardware profile owns DPI, report rate and button actions) or hands
 // control to the host (software). DPI/report-rate writes via 0x2202 / 0x8061
 // only take effect in Host mode — in Onboard mode the profile overrides them,
-// and the device rejects live writes. Decoded from Solaar hidpp20.py /
-// settings_templates.py (OnboardProfiles).
+// and the device rejects live writes. Confirmed against the Superstrike G Hub
+// captures ENABLE_ONBOARD_MODE.pcapng and DISABLE_ONBOARD_MODE.pcapng: function
+// 1 changes the mode and function 2 reads back 0x01 (onboard) or 0x02 (host).
 //
 //	fn2 getMode (0x20) -> [mode]
 //	fn1 setMode (0x10)  : [mode]
