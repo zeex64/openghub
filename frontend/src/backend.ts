@@ -2,6 +2,7 @@ export type DeviceState = {
   connected: boolean; permissionDenied: boolean; name: string; path: string
   battery: number; charging: boolean; hasBattery: boolean; profile: string
   dpiX: number; dpiY: number; pollingRate: number; configuredPollingRate: number
+  connectionType: 'wired'|'wireless'; wiredPollingRate: number; wirelessPollingRate: number
   onboardModeAvailable: boolean; onboardModeEnabled: boolean
   deviceId: string; modelId: string; capabilities: DeviceCapabilities
 }
@@ -25,7 +26,7 @@ export type Profile = {
   dpiStages: DPIStage[]; defaultDpiStage: number; currentDpiStage: number; hasDpiStages: boolean
   buttonMappings: Array<{index: number; name: string; assignment: string}>
 }
-export type DPIStage = { index: number; x: number; y: number; enabled: boolean }
+export type DPIStage = { index: number; x: number; y: number; lod: number; enabled: boolean }
 
 export type ButtonAction = { Kind: number; Code: number; Mods: number; Raw: number[] }
 export type ButtonPayload = { profileName: string; sector: number; buttons: Array<{index: number; name: string; description: string; action: ButtonAction}> }
@@ -42,7 +43,7 @@ declare global {
 }
 
 const emptyCapabilities: DeviceCapabilities = {battery:false,dpi:false,dpiStages:0,pollingRates:[],profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false}
-const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, onboardModeAvailable: false, onboardModeEnabled: false, deviceId:'', modelId:'', capabilities:emptyCapabilities }
+const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, connectionType:'wired', wiredPollingRate:0, wirelessPollingRate:0, onboardModeAvailable: false, onboardModeEnabled: false, deviceId:'', modelId:'', capabilities:emptyCapabilities }
 
 async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
   const fn = window.go?.main?.DesktopController?.[method]
@@ -59,9 +60,11 @@ export const api = {
   selectDevice: (id: string) => invoke<DeviceState>('SelectDevice', id),
   profiles: () => invoke<Profile[]>('GetProfiles'),
   updateDPI: (sector: number, x: number, y: number) => invoke<void>('UpdateDPI', sector, x, y),
-  updateDPIStage: (sector: number, stage: number, x: number, y: number, enabled: boolean, makeDefault: boolean) => invoke<number>('UpdateDPIStage', sector, stage, x, y, enabled, makeDefault),
-  selectDPI: (sector: number, dpi: number) => invoke<void>('SelectDPI', sector, dpi),
+  updateDPIStage: (sector: number, stage: number, x: number, y: number, lod: number, enabled: boolean, makeDefault: boolean) => invoke<number>('UpdateDPIStage', sector, stage, x, y, lod, enabled, makeDefault),
+  saveDPIToProfile: (sector: number, stages: DPIStage[], defaultStage: number, currentStage: number) => invoke<number>('SaveDPIToProfile', sector, stages, defaultStage, currentStage),
+  selectDPI: (sector: number, dpi: number, lod: number) => invoke<void>('SelectDPI', sector, dpi, lod),
   updateRate: (sector: number, rate: number) => invoke<number>('UpdatePollingRate', sector, rate),
+  updateTransportRate: (transport: 'wired'|'wireless', rate: number) => invoke<void>('UpdateTransportPollingRate', transport, rate),
   activate: (sector: number) => invoke<void>('ActivateProfile', sector),
   rename: (sector: number, name: string) => invoke<number>('RenameProfile', sector, name),
   enable: (index: number, enabled: boolean) => invoke<void>('SetProfileEnabled', index, enabled),

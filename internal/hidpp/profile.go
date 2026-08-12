@@ -33,8 +33,8 @@ const profileWriteAckTimeout = 100 * time.Millisecond
 //
 // Profile sector layouts seen in the field:
 //
-//	Legacy/configured: [3..12] five uint16 LE words, active X/Y at 9..12.
-//	Pristine/wired:    [4..28] five [Xlo,Xhi,Ylo,Yhi,0x02] stages.
+//	Legacy:      [3..12] five uint16 LE DPI words.
+//	Superstrike: [3..27] five [LOD,Xlo,Xhi,Ylo,Yhi] stages.
 //
 // Factory profiles may live in ROM sectors 0x0101.. and have 0xFFFF instead
 // of a trailing CRC. Before editing one we clone it into the corresponding RAM
@@ -104,6 +104,7 @@ type DPIStage struct {
 	Index   int
 	X       int
 	Y       int
+	LOD     byte
 	Enabled bool
 }
 
@@ -144,11 +145,12 @@ func decodeProfile(sector int, raw []byte) Profile {
 	if profileUsesFiveByteDPI(raw) {
 		p.HasDPIStages = true
 		for i := 0; i < 5; i++ {
-			off := 4 + i*5
-			x := int(raw[off]) | int(raw[off+1])<<8
-			y := int(raw[off+2]) | int(raw[off+3])<<8
+			off := 3 + i*5
+			x := int(raw[off+1]) | int(raw[off+2])<<8
+			y := int(raw[off+3]) | int(raw[off+4])<<8
+			enabled := validProfileDPI(x) && validProfileDPI(y)
 			p.DPI[i] = x
-			p.DPIStages[i] = DPIStage{Index: i, X: x, Y: y, Enabled: raw[off+4]&0x02 != 0}
+			p.DPIStages[i] = DPIStage{Index: i, X: x, Y: y, LOD: raw[off], Enabled: enabled}
 			if i == p.ResIndex && p.DPIStages[i].Enabled {
 				p.DPIX, p.DPIY = x, y
 			}
@@ -178,20 +180,27 @@ func decodeProfile(sector int, raw []byte) Profile {
 }
 
 func profileUsesFiveByteDPI(raw []byte) bool {
-	if len(raw) < 29 {
+	if len(raw) < 28 {
 		return false
 	}
-	valid := 0
+	records := 0
+	hasLOD := false
 	for i := 0; i < 5; i++ {
-		off := 4 + i*5
-		x := int(raw[off]) | int(raw[off+1])<<8
-		y := int(raw[off+2]) | int(raw[off+3])<<8
-		if x >= 100 && x <= MaxDPI && y >= 100 && y <= MaxDPI {
-			valid++
+		off := 3 + i*5
+		x := int(raw[off+1]) | int(raw[off+2])<<8
+		y := int(raw[off+3]) | int(raw[off+4])<<8
+		disabled := x == 0xFFFF && y == 0xFFFF || x == 0 && y == 0
+		if raw[off] <= 3 && (validProfileDPI(x) && validProfileDPI(y) || disabled) {
+			records++
+		}
+		if raw[off] != 0 {
+			hasLOD = true
 		}
 	}
-	return valid >= 3
+	return records == 5 && hasLOD
 }
+
+func validProfileDPI(dpi int) bool { return dpi >= 100 && dpi <= MaxDPI }
 
 func patchResolution(raw []byte, x, y int) error {
 	if profileUsesFiveByteDPI(raw) {
@@ -199,7 +208,8 @@ func patchResolution(raw []byte, x, y int) error {
 		if stage < 0 || stage > 4 {
 			stage = 0
 		}
-		return patchDPIStage(raw, stage, x, y, true, true)
+		lod := raw[3+stage*5]
+		return patchDPIStage(raw, stage, x, y, lod, true, true)
 	}
 	if len(raw) < 13 {
 		return fmt.Errorf("profile sector too small for DPI fields")
@@ -209,7 +219,7 @@ func patchResolution(raw []byte, x, y int) error {
 	return nil
 }
 
-func patchDPIStage(raw []byte, stage, x, y int, enabled, makeDefault bool) error {
+func patchDPIStage(raw []byte, stage, x, y int, lod byte, enabled, makeDefault bool) error {
 	if !profileUsesFiveByteDPI(raw) {
 		return fmt.Errorf("this profile does not expose five editable DPI stages")
 	}
@@ -219,8 +229,10 @@ func patchDPIStage(raw []byte, stage, x, y int, enabled, makeDefault bool) error
 	if !enabled {
 		enabledCount := 0
 		for i := 0; i < 5; i++ {
-			off := 4 + i*5
-			if i != stage && raw[off+4]&0x02 != 0 {
+			off := 3 + i*5
+			sx := int(raw[off+1]) | int(raw[off+2])<<8
+			sy := int(raw[off+3]) | int(raw[off+4])<<8
+			if i != stage && validProfileDPI(sx) && validProfileDPI(sy) {
 				enabledCount++
 			}
 		}
@@ -228,16 +240,23 @@ func patchDPIStage(raw []byte, stage, x, y int, enabled, makeDefault bool) error
 			return fmt.Errorf("at least one DPI stage must remain enabled")
 		}
 	}
-	off := 4 + stage*5
-	raw[off], raw[off+1] = byte(x), byte(x>>8)
-	raw[off+2], raw[off+3] = byte(y), byte(y>>8)
+	off := 3 + stage*5
 	if enabled {
-		raw[off+4] |= 0x02
+		if lod < 1 || lod > 3 {
+			lod = 2
+		}
+		raw[off] = lod
+		raw[off+1], raw[off+2] = byte(x), byte(x>>8)
+		raw[off+3], raw[off+4] = byte(y), byte(y>>8)
 	} else {
-		raw[off+4] &^= 0x02
+		// Superstrike uses out-of-range 0xFFFF values for an unused stage.
+		raw[off+1], raw[off+2], raw[off+3], raw[off+4] = 0xFF, 0xFF, 0xFF, 0xFF
 		if int(raw[1]) == stage {
 			for i := 0; i < 5; i++ {
-				if raw[4+i*5+4]&0x02 != 0 {
+				candidate := 3 + i*5
+				sx := int(raw[candidate+1]) | int(raw[candidate+2])<<8
+				sy := int(raw[candidate+3]) | int(raw[candidate+4])<<8
+				if validProfileDPI(sx) && validProfileDPI(sy) {
 					raw[1] = byte(i)
 					break
 				}
@@ -466,7 +485,11 @@ func (d *Device) SetCurrentProfileSector(sector int) error {
 	if err != nil {
 		return err
 	}
-	_ = d.SetOnboardMode(OnboardModeOnboard)
+	if mode, modeErr := d.OnboardMode(); modeErr != nil || mode != OnboardModeOnboard {
+		if err := d.SetOnboardMode(OnboardModeOnboard); err != nil {
+			return err
+		}
+	}
 	_, err = d.Call(idx, 0x03, byte(sector>>8), byte(sector&0xFF))
 	return err
 }
@@ -593,12 +616,12 @@ func (d *Device) WriteProfileResolution(sector, x, y int) error {
 // WriteProfileDPIStage edits one of the five onboard DPI stages. Enabled
 // stages are included when a button assigned to Next/Previous/Cycle DPI is
 // pressed. makeDefault also selects the stage loaded when the profile starts.
-func (d *Device) WriteProfileDPIStage(sector, stage, x, y int, enabled, makeDefault bool) (int, error) {
+func (d *Device) WriteProfileDPIStage(sector, stage, x, y int, lod byte, enabled, makeDefault bool) (int, error) {
 	if x < 100 || x > MaxDPI || y < 100 || y > MaxDPI {
 		return 0, fmt.Errorf("DPI must be 100..%d", MaxDPI)
 	}
 	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
-		return patchDPIStage(raw, stage, x, y, enabled, makeDefault)
+		return patchDPIStage(raw, stage, x, y, lod, enabled, makeDefault)
 	})
 	if err != nil {
 		return 0, err
@@ -614,6 +637,54 @@ func (d *Device) WriteProfileDPIStage(sector, stage, x, y int, enabled, makeDefa
 	return actual, nil
 }
 
+// WriteProfileDPISettings stores all five Superstrike DPI records with one
+// sector write, matching G HUB's "Save DPI settings to current profile"
+// operation. It then restores the currently selected DPI stage through
+// OnboardProfiles function 12, instead of bouncing to a different profile.
+func (d *Device) WriteProfileDPISettings(sector int, stages []DPIStage, defaultStage, currentStage int) (int, error) {
+	if len(stages) != 5 {
+		return 0, fmt.Errorf("exactly five DPI stages are required")
+	}
+	if defaultStage < 0 || defaultStage >= len(stages) || !stages[defaultStage].Enabled {
+		return 0, fmt.Errorf("default DPI stage is invalid or disabled")
+	}
+	if currentStage < 0 || currentStage >= len(stages) || !stages[currentStage].Enabled {
+		currentStage = defaultStage
+	}
+	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
+		for i, stage := range stages {
+			if stage.X < 100 || stage.X > MaxDPI || stage.Y < 100 || stage.Y > MaxDPI {
+				return fmt.Errorf("DPI stage %d must be 100..%d", i+1, MaxDPI)
+			}
+			if err := patchDPIStage(raw, i, stage.X, stage.Y, stage.LOD, stage.Enabled, i == defaultStage); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := d.SetCurrentDPIIndex(currentStage); err != nil {
+		return 0, err
+	}
+	return actual, nil
+}
+
+// SetCurrentDPIIndex selects a 0-based DPI record in the current profile.
+// This is OnboardProfiles function 12, captured as 0xCE by G HUB.
+func (d *Device) SetCurrentDPIIndex(stage int) error {
+	if stage < 0 || stage > 4 {
+		return fmt.Errorf("DPI stage %d is out of range", stage+1)
+	}
+	idx, err := d.onboardIndex()
+	if err != nil {
+		return err
+	}
+	_, err = d.Call(idx, 0x0C, byte(stage))
+	return err
+}
+
 // activateLiveDPI changes the sensor's current value without replacing the
 // five onboard stages. The extended DPI setter is ignored while an onboard
 // profile owns the sensor, so hand control to the host and keep it there. The
@@ -624,6 +695,10 @@ func (d *Device) activateLiveDPI(dpi int) error {
 	if info, err := d.DPI(); err == nil {
 		lod = info.LOD
 	}
+	return d.activateLiveDPIWithLOD(dpi, lod)
+}
+
+func (d *Device) activateLiveDPIWithLOD(dpi int, lod byte) error {
 	mode, _ := d.OnboardMode()
 	if mode != OnboardModeHost {
 		if err := d.SetOnboardMode(OnboardModeHost); err != nil {
@@ -650,6 +725,16 @@ func (d *Device) SelectLiveDPI(dpi int) error {
 	return d.activateLiveDPI(dpi)
 }
 
+func (d *Device) SelectLiveDPIWithLOD(dpi int, lod byte) error {
+	if dpi < 100 || dpi > MaxDPI {
+		return fmt.Errorf("DPI must be 100..%d", MaxDPI)
+	}
+	if !ValidDPILOD(lod) {
+		return fmt.Errorf("lift-off distance must be low, medium, or high")
+	}
+	return d.activateLiveDPIWithLOD(dpi, lod)
+}
+
 // SetProfileEnabled flips the enabled flag for the profile at the given 1-based
 // slot index in the RAM control sector (0x0000). The flag lives at byte
 // slot*4+2 of the 4-byte-per-slot header table; everything else is preserved
@@ -668,30 +753,64 @@ func (d *Device) SetProfileEnabled(index int, enabled bool) error {
 		return err
 	}
 	if len(ctrl) >= 4 && (allEq(ctrl[:4], 0x00) || allEq(ctrl[:4], 0xFF)) {
-		sector, serr := d.CurrentProfileSector()
-		if serr != nil || sector < 0x0101 {
-			return fmt.Errorf("no editable RAM profile is available")
-		}
-		if _, err := d.patchProfileSectorResolved(sector, func([]byte) error { return nil }); err != nil {
-			return err
-		}
-		ctrl, err = d.readSector(idx, 0x0000, info.SectorSize)
+		ctrl, err = d.cloneFactoryProfilesToRAM(idx, info)
 		if err != nil {
 			return err
 		}
-		index = 1
-	}
-	pos := (index-1)*4 + 2
-	if pos >= len(ctrl)-2 {
-		return fmt.Errorf("profile slot %d out of range", index)
 	}
 	cp := append([]byte(nil), ctrl...)
-	if enabled {
-		cp[pos] = 0x01
-	} else {
-		cp[pos] = 0x00
+	if err := patchProfileEnabledControl(cp, index, enabled); err != nil {
+		return err
 	}
 	return d.writeSector(idx, 0x0000, cp)
+}
+
+func patchProfileEnabledControl(control []byte, index int, enabled bool) error {
+	pos := (index-1)*4 + 2
+	if index < 1 || pos >= len(control)-2 {
+		return fmt.Errorf("profile slot %d out of range", index)
+	}
+	if enabled {
+		control[pos] = 0x01
+	} else {
+		control[pos] = 0x00
+	}
+	return nil
+}
+
+// cloneFactoryProfilesToRAM mirrors G HUB's first profile enable/disable
+// operation: copy every factory profile and the full ROM control table into
+// RAM before changing one flag. Creating a one-entry control table here would
+// make the other four Superstrike slots disappear.
+func (d *Device) cloneFactoryProfilesToRAM(idx byte, info ProfileInfo) ([]byte, error) {
+	romControl, err := d.readSector(idx, 0x0100, info.SectorSize)
+	if err != nil {
+		return nil, fmt.Errorf("read factory profile table: %w", err)
+	}
+	control := append([]byte(nil), romControl...)
+	for slot := 1; slot <= info.Count; slot++ {
+		pos := (slot - 1) * 4
+		if pos+3 >= len(control)-2 || control[pos] == 0xFF && control[pos+1] == 0xFF {
+			break
+		}
+		romSector := int(control[pos])<<8 | int(control[pos+1])
+		if romSector >= 1 && romSector <= info.Count {
+			romSector += 0x0100
+		}
+		if romSector < 0x0101 || romSector > 0x0100+info.Count {
+			return nil, fmt.Errorf("factory profile slot %d has invalid sector 0x%04X", slot, romSector)
+		}
+		raw, err := d.readProfileSector(idx, romSector, info.SectorSize)
+		if err != nil {
+			return nil, fmt.Errorf("read factory profile slot %d: %w", slot, err)
+		}
+		ramSector := romSector & 0x00FF
+		if err := d.writeSector(idx, ramSector, append([]byte(nil), raw...)); err != nil {
+			return nil, fmt.Errorf("clone factory profile slot %d: %w", slot, err)
+		}
+		control[pos], control[pos+1] = byte(ramSector>>8), byte(ramSector)
+	}
+	return control, nil
 }
 
 // SetProfileName writes the profile's name (UTF-16LE, max 24 chars) into bytes

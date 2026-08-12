@@ -31,8 +31,12 @@ func (superstrikeDriver) Profiles(device *hidpp.Device) ([]hidpp.Profile, error)
 	return device.Profiles()
 }
 
-func (superstrikeDriver) WriteDPIStage(device *hidpp.Device, sector, stage, x, y int, enabled, makeDefault bool) (int, error) {
-	return device.WriteProfileDPIStage(sector, stage, x, y, enabled, makeDefault)
+func (superstrikeDriver) WriteDPIStage(device *hidpp.Device, sector, stage, x, y int, lod byte, enabled, makeDefault bool) (int, error) {
+	return device.WriteProfileDPIStage(sector, stage, x, y, lod, enabled, makeDefault)
+}
+
+func (superstrikeDriver) SaveDPISettings(device *hidpp.Device, sector int, stages []hidpp.DPIStage, defaultStage, currentStage int) (int, error) {
+	return device.WriteProfileDPISettings(sector, stages, defaultStage, currentStage)
 }
 
 func (superstrikeDriver) WriteResolution(device *hidpp.Device, sector, x, y int) error {

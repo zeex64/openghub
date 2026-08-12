@@ -28,8 +28,11 @@ func (unsupportedDriver) Capabilities(features FeatureSet) Capabilities {
 func (unsupportedDriver) Profiles(*hidpp.Device) ([]hidpp.Profile, error) {
 	return nil, unsupported("onboard profiles")
 }
-func (unsupportedDriver) WriteDPIStage(*hidpp.Device, int, int, int, int, bool, bool) (int, error) {
+func (unsupportedDriver) WriteDPIStage(*hidpp.Device, int, int, int, int, byte, bool, bool) (int, error) {
 	return 0, unsupported("DPI-stage writes")
+}
+func (unsupportedDriver) SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int) (int, error) {
+	return 0, unsupported("DPI-settings save")
 }
 func (unsupportedDriver) WriteResolution(*hidpp.Device, int, int, int) error {
 	return unsupported("profile DPI writes")

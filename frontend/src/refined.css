@@ -432,17 +432,17 @@ nav .icon { width: 17px; height: 17px; }
 }
 .dpi-stage-row.local { grid-template-columns: 24px 18px 32px 104px 12px minmax(100px,1fr) 62px 46px 12px minmax(90px,.8fr) 62px 26px; }
 .dpi-stage-head {
-  display: grid; grid-template-columns: 86px 1fr 92px 108px; padding: 0 14px 9px;
+  display: grid; grid-template-columns: 20px 100px minmax(180px,1fr) 100px 190px 58px; padding: 0 14px 9px;
   color: var(--hub-fg-35); font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
 }
 .dpi-stage-head span:nth-child(2) { padding-left: 8px; }
 .dpi-stage-head span:nth-child(n+3) { text-align: center; }
 .dpi-stage-row.onboard {
-  grid-template-columns: 20px 42px minmax(160px,1fr) 78px 28px 58px 74px 54px;
+  grid-template-columns: 20px 100px minmax(180px,1fr) 100px 190px 58px;
   min-height: 70px; gap: 12px; padding: 10px 14px;
 }
 .dpi-stage-row.onboard.disabled { opacity: 1; }
-.dpi-stage-row.onboard.disabled > :not(.dpi-stage-switch):not(.dpi-stage-index) { opacity: .34; }
+.dpi-stage-row.onboard.disabled > :not(.dpi-stage-switch):not(.dpi-stage-identity) { opacity: .34; }
 .dpi-stage-index {
   display: grid; place-items: center; width: 34px; height: 34px; border-left: 3px solid;
   color: #fff; background: #29292b; font-size: 12px; font-weight: 600;
@@ -503,7 +503,7 @@ nav .icon { width: 17px; height: 17px; }
 .dpi-unsupported p { color: var(--hub-fg-60); }
 
 @media (max-width: 1120px) {
-  .dpi-stage-row.onboard { grid-template-columns: 20px 36px minmax(120px,1fr) 70px 24px 52px 68px; }
+  .dpi-stage-row.onboard { grid-template-columns: 20px 88px minmax(140px,1fr) 90px 160px 52px; }
   .dpi-row-save { display: none; }
 }
 

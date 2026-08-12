@@ -7,9 +7,10 @@ func fiveByteProfileFixture() []byte {
 	raw[0], raw[1] = 3, 0
 	values := []int{800, 1200, 1600, 2400, 3200}
 	for i, dpi := range values {
-		off := 4 + i*5
-		raw[off], raw[off+1] = byte(dpi), byte(dpi>>8)
-		raw[off+2], raw[off+3], raw[off+4] = byte(dpi), byte(dpi>>8), 0x02
+		off := 3 + i*5
+		raw[off] = DPILODMedium
+		raw[off+1], raw[off+2] = byte(dpi), byte(dpi>>8)
+		raw[off+3], raw[off+4] = byte(dpi), byte(dpi>>8)
 	}
 	return raw
 }
@@ -36,41 +37,84 @@ func TestPatchFiveByteDPIUpdatesOnlyDefaultStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		off := 4 + i*5
-		x := int(raw[off]) | int(raw[off+1])<<8
-		y := int(raw[off+2]) | int(raw[off+3])<<8
+		off := 3 + i*5
+		x := int(raw[off+1]) | int(raw[off+2])<<8
+		y := int(raw[off+3]) | int(raw[off+4])<<8
 		wantX, wantY := []int{800, 1200, 1650, 2400, 3200}[i], []int{800, 1200, 1700, 2400, 3200}[i]
-		if x != wantX || y != wantY || raw[off+4] != 0x02 {
-			t.Fatalf("stage %d = %d/%d flag %02x", i, x, y, raw[off+4])
+		if x != wantX || y != wantY || raw[off] != DPILODMedium {
+			t.Fatalf("stage %d = %d/%d LOD %02x", i, x, y, raw[off])
 		}
 	}
 }
 
 func TestPatchFiveByteDPIStageEnableAndDefault(t *testing.T) {
 	raw := fiveByteProfileFixture()
-	if err := patchDPIStage(raw, 3, 2450, 2500, true, true); err != nil {
+	if err := patchDPIStage(raw, 3, 2450, 2500, DPILODHigh, true, true); err != nil {
 		t.Fatal(err)
 	}
-	if raw[1] != 3 || raw[4+3*5+4]&0x02 == 0 {
-		t.Fatalf("stage 4 was not enabled and selected: index=%d flag=%02x", raw[1], raw[4+3*5+4])
+	if raw[1] != 3 || raw[3+3*5] != DPILODHigh {
+		t.Fatalf("stage 4 was not enabled and selected: index=%d LOD=%02x", raw[1], raw[3+3*5])
 	}
-	if err := patchDPIStage(raw, 3, 2450, 2500, false, false); err != nil {
+	if err := patchDPIStage(raw, 3, 2450, 2500, DPILODHigh, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if raw[4+3*5+4]&0x02 != 0 || raw[1] == 3 {
-		t.Fatalf("stage 4 was not disabled or default was not moved: index=%d flag=%02x", raw[1], raw[4+3*5+4])
+	off := 3 + 3*5
+	if raw[off+1] != 0xFF || raw[off+2] != 0xFF || raw[off+3] != 0xFF || raw[off+4] != 0xFF || raw[1] == 3 {
+		t.Fatalf("stage 4 was not disabled or default was not moved: index=%d bytes=% x", raw[1], raw[off:off+5])
 	}
 }
 
 func TestCannotDisableEveryDPIStage(t *testing.T) {
 	raw := fiveByteProfileFixture()
 	for i := 1; i < 5; i++ {
-		if err := patchDPIStage(raw, i, 800, 800, false, false); err != nil {
+		if err := patchDPIStage(raw, i, 800, 800, DPILODMedium, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := patchDPIStage(raw, 0, 800, 800, false, false); err == nil {
+	if err := patchDPIStage(raw, 0, 800, 800, DPILODMedium, false, false); err == nil {
 		t.Fatal("disabling the final DPI stage should fail")
+	}
+}
+
+func TestDecodeSuperstrikeCaptureLayoutAndLOD(t *testing.T) {
+	raw := make([]byte, 255)
+	copy(raw, []byte{0x03, 0x03, 0x01, 0x02, 0x8c, 0x05, 0x8c, 0x05, 0x01, 0xe8, 0x03, 0xe8, 0x03, 0x03, 0x00, 0x0a, 0x00, 0x0a, 0x02, 0xb4, 0x14, 0xb4, 0x14, 0x02, 0x54, 0x24, 0x54, 0x24})
+	p := decodeProfile(1, raw)
+	if !p.HasDPIStages || p.ResIndex != 3 {
+		t.Fatalf("layout/default = %v/%d, want Superstrike/3", p.HasDPIStages, p.ResIndex)
+	}
+	wantDPI := [5]int{1420, 1000, 2560, 5300, 9300}
+	if p.DPI != wantDPI {
+		t.Fatalf("DPI stages = %v, want %v", p.DPI, wantDPI)
+	}
+	wantLOD := [5]byte{DPILODMedium, DPILODLow, DPILODHigh, DPILODMedium, DPILODMedium}
+	for i, stage := range p.DPIStages {
+		if stage.LOD != wantLOD[i] || !stage.Enabled {
+			t.Fatalf("stage %d LOD/enabled = %d/%v, want %d/true", i, stage.LOD, stage.Enabled, wantLOD[i])
+		}
+	}
+}
+
+func TestProfileEnableFlagMatchesCapturedControlTable(t *testing.T) {
+	control := make([]byte, 255)
+	copy(control, []byte{
+		0x00, 0x01, 0x01, 0xFF,
+		0x00, 0x02, 0x01, 0xFF,
+		0x00, 0x03, 0x01, 0xFF,
+		0x00, 0x04, 0x00, 0xFF,
+		0x00, 0x05, 0x00, 0xFF,
+	})
+	if err := patchProfileEnabledControl(control, 3, false); err != nil {
+		t.Fatal(err)
+	}
+	if control[10] != 0x00 || control[6] != 0x01 || control[14] != 0x00 {
+		t.Fatalf("disable capture flags = %02x/%02x/%02x, want 01/00/00", control[6], control[10], control[14])
+	}
+	if err := patchProfileEnabledControl(control, 3, true); err != nil {
+		t.Fatal(err)
+	}
+	if control[10] != 0x01 {
+		t.Fatalf("enable capture flag = %02x, want 01", control[10])
 	}
 }
 

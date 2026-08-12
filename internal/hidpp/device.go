@@ -223,6 +223,16 @@ type DPIInfo struct {
 	Step    int
 }
 
+const (
+	DPILODLow    byte = 0x01
+	DPILODMedium byte = 0x02
+	DPILODHigh   byte = 0x03
+)
+
+func ValidDPILOD(lod byte) bool {
+	return lod == DPILODLow || lod == DPILODMedium || lod == DPILODHigh
+}
+
 // dpiFeature resolves the device's DPI feature, preferring the extended
 // variant (0x2202) used by current mice like the Superstrike, then falling
 // back to the classic 0x2201. ext reports which one was found.
@@ -367,6 +377,18 @@ func (d *Device) CurrentDPI() (int, error) {
 // X, Y and LOD words; classic (0x2201) setSensorDpi is fn3 with just X.
 func (d *Device) SetDPI(dpi int) error {
 	return d.setDPIWithLOD(dpi, 0)
+}
+
+// SetDPIWithLOD applies the Superstrike's extended DPI tuple. Captures from G
+// HUB encode lift-off distance as 1=low, 2=medium, and 3=high.
+func (d *Device) SetDPIWithLOD(dpi int, lod byte) error {
+	if dpi < 100 || dpi > MaxDPI {
+		return fmt.Errorf("DPI must be 100..%d", MaxDPI)
+	}
+	if !ValidDPILOD(lod) {
+		return fmt.Errorf("lift-off distance must be low, medium, or high")
+	}
+	return d.setDPIWithLOD(dpi, lod)
 }
 
 func (d *Device) setDPIWithLOD(dpi int, lod byte) error {

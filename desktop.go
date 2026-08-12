@@ -59,6 +59,8 @@ type DeviceSession struct {
 	surfaceMode         int
 	surfaceKnown        bool
 	surfacePreferred    bool
+	wiredReportRate     int
+	wirelessReportRate  int
 }
 
 type DeviceState struct {
@@ -74,6 +76,9 @@ type DeviceState struct {
 	DPIY                  int                  `json:"dpiY"`
 	PollingRate           int                  `json:"pollingRate"`
 	ConfiguredPollingRate int                  `json:"configuredPollingRate"`
+	ConnectionType        string               `json:"connectionType"`
+	WiredPollingRate      int                  `json:"wiredPollingRate"`
+	WirelessPollingRate   int                  `json:"wirelessPollingRate"`
 	OnboardModeAvailable  bool                 `json:"onboardModeAvailable"`
 	OnboardModeEnabled    bool                 `json:"onboardModeEnabled"`
 	DeviceID              string               `json:"deviceId"`
@@ -122,6 +127,7 @@ type DPIStageDTO struct {
 	Index   int  `json:"index"`
 	X       int  `json:"x"`
 	Y       int  `json:"y"`
+	LOD     int  `json:"lod"`
 	Enabled bool `json:"enabled"`
 }
 
@@ -175,8 +181,10 @@ type AdvancedSettingsPayload struct {
 }
 
 type advancedPreferences struct {
-	GamingSurfaceMode *int `json:"gamingSurfaceMode,omitempty"`
-	BhopWindowMS      *int `json:"bhopWindowMs,omitempty"`
+	GamingSurfaceMode  *int `json:"gamingSurfaceMode,omitempty"`
+	BhopWindowMS       *int `json:"bhopWindowMs,omitempty"`
+	WiredReportRate    *int `json:"wiredReportRate,omitempty"`
+	WirelessReportRate *int `json:"wirelessReportRate,omitempty"`
 }
 
 type storedPreferences struct {
@@ -185,7 +193,7 @@ type storedPreferences struct {
 	LegacySuperstrike *advancedPreferences           `json:"superstrike,omitempty"`
 }
 
-const storedPreferencesVersion = 2
+const storedPreferencesVersion = 3
 
 func preferencesPath() (string, error) {
 	dir, err := os.UserConfigDir()
@@ -262,6 +270,15 @@ func validStoredSurfaceMode(mode int) bool {
 
 func validStoredBhopWindow(windowMS int) bool {
 	return windowMS == 0 || (windowMS >= 100 && windowMS <= 1000 && windowMS%10 == 0)
+}
+
+func validStoredReportRate(hz int) bool {
+	for _, supported := range hidpp.ReportRates {
+		if hz == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func runDesktop() {
@@ -346,15 +363,23 @@ func (c *DesktopController) loadPreferencesLocked() {
 
 func (c *DesktopController) applyStoredPreferencesLocked(session *DeviceSession) {
 	var advanced advancedPreferences
-	found := false
-	for _, key := range preferenceLookupKeys(session) {
+	keys := preferenceLookupKeys(session)
+	for i := len(keys) - 1; i >= 0; i-- {
+		key := keys[i]
 		if value, exists := c.preferences.Devices[key]; exists {
-			advanced, found = value, true
-			break
+			if value.GamingSurfaceMode != nil {
+				advanced.GamingSurfaceMode = value.GamingSurfaceMode
+			}
+			if value.BhopWindowMS != nil {
+				advanced.BhopWindowMS = value.BhopWindowMS
+			}
+			if value.WiredReportRate != nil {
+				advanced.WiredReportRate = value.WiredReportRate
+			}
+			if value.WirelessReportRate != nil {
+				advanced.WirelessReportRate = value.WirelessReportRate
+			}
 		}
-	}
-	if !found {
-		return
 	}
 	if advanced.GamingSurfaceMode != nil && validStoredSurfaceMode(*advanced.GamingSurfaceMode) {
 		session.surfaceMode = *advanced.GamingSurfaceMode
@@ -365,6 +390,12 @@ func (c *DesktopController) applyStoredPreferencesLocked(session *DeviceSession)
 		session.bhopWindow = *advanced.BhopWindowMS
 		session.bhopKnown = true
 		session.bhopPreferred = true
+	}
+	if advanced.WiredReportRate != nil && validStoredReportRate(*advanced.WiredReportRate) {
+		session.wiredReportRate = *advanced.WiredReportRate
+	}
+	if advanced.WirelessReportRate != nil && validStoredReportRate(*advanced.WirelessReportRate) {
+		session.wirelessReportRate = *advanced.WirelessReportRate
 	}
 }
 
@@ -386,11 +417,25 @@ func (c *DesktopController) savePreferencesLocked() error {
 		window := session.bhopWindow
 		advanced.BhopWindowMS = &window
 	}
+	if validStoredReportRate(session.wiredReportRate) {
+		rate := session.wiredReportRate
+		advanced.WiredReportRate = &rate
+	}
+	if validStoredReportRate(session.wirelessReportRate) {
+		rate := session.wirelessReportRate
+		advanced.WirelessReportRate = &rate
+	}
 	if c.preferences.Devices == nil {
 		c.preferences.Devices = make(map[string]advancedPreferences)
 	}
 	c.preferences.Version = storedPreferencesVersion
 	c.preferences.Devices[preferenceStorageKey(session)] = advanced
+	// Transport preferences must follow the physical mouse between its cable
+	// endpoint and receiver endpoint, whose sysfs serials may differ.
+	modelPreferences := c.preferences.Devices[session.Driver.ID()]
+	modelPreferences.WiredReportRate = advanced.WiredReportRate
+	modelPreferences.WirelessReportRate = advanced.WirelessReportRate
+	c.preferences.Devices[session.Driver.ID()] = modelPreferences
 	return writeStoredPreferences(path, c.preferences)
 }
 
@@ -408,6 +453,13 @@ func preferenceLookupKeys(session *DeviceSession) []string {
 		return []string{exact}
 	}
 	return []string{exact, session.Driver.ID()}
+}
+
+func connectionType(identity hidpp.DeviceIdentity) string {
+	if identity.ProductID == 0xC54D || identity.ProductID == 0x40BD || identity.PhysicalSlot != 0 || strings.Contains(strings.ToUpper(identity.Name), "RECEIVER") {
+		return "wireless"
+	}
+	return "wired"
 }
 
 func (c *DesktopController) initializeSessionLocked(device *hidpp.Device) *DeviceSession {
@@ -431,6 +483,24 @@ func (c *DesktopController) initializeSessionLocked(device *hidpp.Device) *Devic
 		session.Name = normalizeDeviceName(matchIdentity.Name)
 	}
 	c.applyStoredPreferencesLocked(session)
+	transport := connectionType(identity)
+	knownRate := session.wiredReportRate
+	if transport == "wireless" {
+		knownRate = session.wirelessReportRate
+	}
+	if validStoredReportRate(knownRate) {
+		session.Rate = knownRate
+	} else if current, _, err := device.ReportRate(); err == nil && validStoredReportRate(current) {
+		// fn2 is cached in some firmware states, so use it only as an initial
+		// fallback. The input-event measurement loop replaces it once the mouse
+		// produces enough movement reports.
+		session.Rate = current
+		if transport == "wireless" {
+			session.wirelessReportRate = current
+		} else {
+			session.wiredReportRate = current
+		}
+	}
 	if !session.surfacePreferred && session.Capabilities.GamingSurface {
 		if mode, err := device.GamingSurfaceMode(); err == nil {
 			session.surfaceMode, session.surfaceKnown = int(mode), true
@@ -593,6 +663,9 @@ func (c *DesktopController) deviceStateLocked(session *DeviceSession) DeviceStat
 		Connected: true, Name: session.Name, Path: device.Path, PollingRate: session.Rate,
 		DeviceID: session.Identity.ID, ModelID: session.Driver.ID(), Capabilities: session.Capabilities,
 	}
+	s.ConnectionType = connectionType(session.Identity)
+	s.WiredPollingRate = session.wiredReportRate
+	s.WirelessPollingRate = session.wirelessReportRate
 	if session.Capabilities.OnboardMode {
 		s.OnboardModeAvailable = true
 		if mode, err := device.OnboardMode(); err == nil {
@@ -614,6 +687,11 @@ func (c *DesktopController) deviceStateLocked(session *DeviceSession) DeviceStat
 	}
 	if dpi, err := device.CurrentDPI(); err == nil && dpi > 0 {
 		s.DPIX, s.DPIY = dpi, dpi
+	}
+	if s.ConnectionType == "wireless" && s.WirelessPollingRate > 0 {
+		s.ConfiguredPollingRate = s.WirelessPollingRate
+	} else if s.ConnectionType == "wired" && s.WiredPollingRate > 0 {
+		s.ConfiguredPollingRate = s.WiredPollingRate
 	}
 	return s
 }
@@ -645,7 +723,18 @@ func (c *DesktopController) GetProfiles() ([]ProfileDTO, error) {
 		stages := make([]DPIStageDTO, 0, len(p.DPIStages))
 		if p.HasDPIStages {
 			for _, stage := range p.DPIStages {
-				stages = append(stages, DPIStageDTO{Index: stage.Index, X: stage.X, Y: stage.Y, Enabled: stage.Enabled})
+				lod := int(stage.LOD)
+				if !hidpp.ValidDPILOD(byte(lod)) {
+					lod = int(hidpp.DPILODMedium)
+				}
+				x, y := stage.X, stage.Y
+				if !stage.Enabled {
+					x, y = p.DPIX, p.DPIY
+					if x < 100 || x > hidpp.MaxDPI || y < 100 || y > hidpp.MaxDPI {
+						x, y = 800, 800
+					}
+				}
+				stages = append(stages, DPIStageDTO{Index: stage.Index, X: x, Y: y, LOD: lod, Enabled: stage.Enabled})
 			}
 		}
 		currentStage := -1
@@ -666,7 +755,7 @@ func (c *DesktopController) GetProfiles() ([]ProfileDTO, error) {
 	return out, nil
 }
 
-func (c *DesktopController) UpdateDPIStage(sector, stage, x, y int, enabled, makeDefault bool) (int, error) {
+func (c *DesktopController) UpdateDPIStage(sector, stage, x, y, lod int, enabled, makeDefault bool) (int, error) {
 	if x < 100 || x > hidpp.MaxDPI || y < 100 || y > hidpp.MaxDPI {
 		return 0, fmt.Errorf("DPI must be between 100 and %d", hidpp.MaxDPI)
 	}
@@ -680,7 +769,7 @@ func (c *DesktopController) UpdateDPIStage(sector, stage, x, y int, enabled, mak
 		return 0, err
 	}
 	defer c.restoreHostModeLocked(session)
-	actual, err := session.Driver.WriteDPIStage(session.Device, sector, stage, x, y, enabled, makeDefault)
+	actual, err := session.Driver.WriteDPIStage(session.Device, sector, stage, x, y, byte(lod), enabled, makeDefault)
 	if err != nil {
 		return 0, err
 	}
@@ -688,7 +777,37 @@ func (c *DesktopController) UpdateDPIStage(sector, stage, x, y int, enabled, mak
 	return actual, nil
 }
 
-func (c *DesktopController) SelectDPI(sector, dpi int) error {
+func (c *DesktopController) SaveDPIToProfile(sector int, stages []DPIStageDTO, defaultStage, currentStage int) (int, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := c.ensureDeviceLocked(); err != nil {
+		return 0, err
+	}
+	session := c.selectedSessionLocked()
+	if session.Driver.ID() != "superstrike" {
+		return 0, fmt.Errorf("DPI profile saving is only available for the Superstrike")
+	}
+	if err := c.requireHostModeLocked(session); err != nil {
+		return 0, err
+	}
+	// A first write may clone the factory profile into RAM. Activating that new
+	// RAM sector temporarily enters onboard mode, so always return ownership to
+	// the host after the save. Otherwise the next launch merely reports the
+	// onboard state accidentally left behind here.
+	defer c.restoreHostModeLocked(session)
+	converted := make([]hidpp.DPIStage, len(stages))
+	for i, stage := range stages {
+		converted[i] = hidpp.DPIStage{Index: i, X: stage.X, Y: stage.Y, LOD: byte(stage.LOD), Enabled: stage.Enabled}
+	}
+	actual, err := session.Driver.SaveDPISettings(session.Device, sector, converted, defaultStage, currentStage)
+	if err != nil {
+		return 0, err
+	}
+	session.activeProfileSector = actual
+	return actual, nil
+}
+
+func (c *DesktopController) SelectDPI(sector, dpi, lod int) error {
 	if dpi < 100 || dpi > hidpp.MaxDPI {
 		return fmt.Errorf("DPI must be between 100 and %d", hidpp.MaxDPI)
 	}
@@ -696,7 +815,10 @@ func (c *DesktopController) SelectDPI(sector, dpi int) error {
 		return fmt.Errorf("invalid active profile sector 0x%04X", sector)
 	}
 	return c.withSession(func(session *DeviceSession) error {
-		if err := session.Device.SelectLiveDPI(dpi); err != nil {
+		if session.Driver.ID() != "superstrike" {
+			return fmt.Errorf("lift-off distance is only available for the Superstrike")
+		}
+		if err := session.Device.SelectLiveDPIWithLOD(dpi, byte(lod)); err != nil {
 			return err
 		}
 		session.activeProfileSector = sector
@@ -730,6 +852,59 @@ func (c *DesktopController) UpdatePollingRate(sector, hz int) (int, error) {
 	}
 	session.activeProfileSector = actual
 	return actual, nil
+}
+
+// UpdateTransportPollingRate matches the Superstrike's 0x8061 fn3 behavior:
+// the command changes the report rate for the connection currently carrying
+// HID++ traffic. Wired and wireless captures use the same command, so an
+// inactive transport cannot be programmed until the mouse is connected by it.
+func (c *DesktopController) UpdateTransportPollingRate(transport string, hz int) error {
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	if transport != "wired" && transport != "wireless" {
+		return fmt.Errorf("unknown polling-rate transport %q", transport)
+	}
+	if !validStoredReportRate(hz) {
+		return fmt.Errorf("unsupported polling rate %d Hz", hz)
+	}
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := c.ensureDeviceLocked(); err != nil {
+		return err
+	}
+	session := c.selectedSessionLocked()
+	if err := c.requireHostModeLocked(session); err != nil {
+		return err
+	}
+	defer c.restoreHostModeLocked(session)
+	activeTransport := connectionType(session.Identity)
+	if transport != activeTransport {
+		return fmt.Errorf("connect the mouse over %s to change its %s polling rate", transport, transport)
+	}
+	profile, err := c.activeProfileLocked(session)
+	if err != nil {
+		return fmt.Errorf("could not identify the active profile: %w", err)
+	}
+	actualSector, err := session.Driver.SetReportRate(session.Device, profile.Sector, hz)
+	if err != nil {
+		return fmt.Errorf("save polling rate to the active profile: %w", err)
+	}
+	session.activeProfileSector = actualSector
+	// Reloading a profile applies its persistent rate in onboard mode. Return
+	// to host control before issuing the captured transport-specific live write.
+	c.restoreHostModeLocked(session)
+	if err := session.Device.SetReportRate(hz); err != nil {
+		return fmt.Errorf("apply live %s polling rate: %w", transport, err)
+	}
+	session.Rate = hz
+	if transport == "wireless" {
+		session.wirelessReportRate = hz
+	} else {
+		session.wiredReportRate = hz
+	}
+	if err := c.savePreferencesLocked(); err != nil {
+		return fmt.Errorf("polling rate applied, but the preference could not be saved: %w", err)
+	}
+	return nil
 }
 
 func (c *DesktopController) ActivateProfile(sector int) error {
@@ -845,14 +1020,25 @@ func resolveActiveProfileSector(reported, remembered int, profiles []hidpp.Profi
 }
 
 func storedDefaultDPI(profile hidpp.Profile) (int, bool) {
-	if !profile.HasDPIStages || profile.ResIndex < 0 || profile.ResIndex >= len(profile.DPIStages) {
+	stageIndex, ok := storedDefaultDPIStage(profile)
+	if !ok {
 		return 0, false
 	}
-	stage := profile.DPIStages[profile.ResIndex]
-	if !stage.Enabled || stage.X < 100 || stage.X > hidpp.MaxDPI {
+	stage := profile.DPIStages[stageIndex]
+	if stage.X < 100 || stage.X > hidpp.MaxDPI {
 		return 0, false
 	}
 	return stage.X, true
+}
+
+func storedDefaultDPIStage(profile hidpp.Profile) (int, bool) {
+	if !profile.HasDPIStages || profile.ResIndex < 0 || profile.ResIndex >= len(profile.DPIStages) {
+		return 0, false
+	}
+	if !profile.DPIStages[profile.ResIndex].Enabled {
+		return 0, false
+	}
+	return profile.ResIndex, true
 }
 
 func (c *DesktopController) GetButtonChoices() ButtonChoicesDTO {
@@ -1035,6 +1221,18 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 		return err
 	}
 	session := c.selectedSessionLocked()
+	profileSector := 0
+	profileDefaultStage := -1
+	if enabled && session.Driver.ID() == "superstrike" {
+		profile, err := c.activeProfileLocked(session)
+		if err != nil {
+			return fmt.Errorf("could not identify the active profile before enabling onboard mode: %w", err)
+		}
+		profileSector = profile.Sector
+		if stage, ok := storedDefaultDPIStage(profile); ok {
+			profileDefaultStage = stage
+		}
+	}
 	target := byte(hidpp.OnboardModeHost)
 	if enabled {
 		target = hidpp.OnboardModeOnboard
@@ -1049,6 +1247,29 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 	}
 	if mode != target {
 		return fmt.Errorf("onboard mode did not apply: got 0x%02X, want 0x%02X", mode, target)
+	}
+	if enabled && profileSector != 0 {
+		// Merely changing owners makes some Superstrike firmware restore its
+		// stale runtime DPI stage. Reload the profile, then explicitly reset the
+		// separate runtime index to byte 1's stored default.
+		if err := session.Device.ReloadProfile(profileSector); err != nil {
+			return fmt.Errorf("onboard mode enabled, but the active profile could not be reloaded: %w", err)
+		}
+		time.Sleep(120 * time.Millisecond)
+		if profileDefaultStage >= 0 {
+			if err := session.Device.SetCurrentDPIIndex(profileDefaultStage); err != nil {
+				return fmt.Errorf("onboard mode enabled, but the stored default DPI slot could not be selected: %w", err)
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+		sector, err := session.Device.CurrentProfileSector()
+		if err != nil {
+			return fmt.Errorf("onboard profile reloaded, but its active sector could not be verified: %w", err)
+		}
+		if sector != profileSector {
+			return fmt.Errorf("onboard profile did not apply: got sector 0x%04X, want 0x%04X", sector, profileSector)
+		}
+		session.activeProfileSector = profileSector
 	}
 	if !enabled {
 		c.applyHostPreferencesToSessionLocked(session)

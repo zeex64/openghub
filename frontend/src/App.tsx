@@ -154,80 +154,70 @@ function Metric({label, value, suffix, detail, icon}: {label: string; value: str
 }
 
 function Dashboard({state, notify, active=true, onModelPrepared}: {state: DeviceState; notify: (s: string, e?: boolean) => void; active?:boolean;onModelPrepared?:()=>void}) {
-  const [selectedRate, setSelectedRate] = useState(0)
-  const [activeSector, setActiveSector] = useState(0)
+  const [selectedRates,setSelectedRates] = useState({wired:0,wireless:0})
   const [savingRate, setSavingRate] = useState(false)
   const [operation,setOperation] = useState<OperationState>()
   useEffect(() => {
-    if (!state.connected) return
-    api.profiles().then(profiles => {
-      const active = profiles.find(profile => profile.active)
-      if (active) { setSelectedRate(active.pollingRate); setActiveSector(active.sector) }
-    }).catch(() => {})
-  }, [state.connected, state.profile])
-  const chooseRate = async (rate: number) => {
-    if (savingRate || rate === selectedRate) return
-    const previous = selectedRate
-    setSelectedRate(rate); setSavingRate(true); setOperation({text:'Writing polling rate…',tone:'saving'})
+    setSelectedRates({wired:state.wiredPollingRate||0,wireless:state.wirelessPollingRate||0})
+  }, [state.wiredPollingRate,state.wirelessPollingRate])
+  const chooseRate = async (transport:'wired'|'wireless',rate:number) => {
+    if(savingRate||state.connectionType!==transport||rate===selectedRates[transport])return
+    const previous=selectedRates[transport]
+    setSelectedRates(current=>({...current,[transport]:rate}));setSavingRate(true);setOperation({text:`Saving ${transport} polling rate to the current profile…`,tone:'saving'})
     try {
-      let sector=activeSector
-      if(!sector){const profiles=await api.profiles();const active=profiles.find(profile=>profile.active);if(!active)throw new Error('No active onboard profile was found');sector=active.sector;setActiveSector(sector)}
-      const actualSector=await api.updateRate(sector, rate)
-      setActiveSector(actualSector)
-      setOperation({text:`${rate} Hz stored in the active profile`,tone:'saved'})
-      notify(`Polling rate set to ${rate} Hz`)
+      await api.updateTransportRate(transport,rate)
+      setOperation({text:`${transport==='wired'?'Wired':'Wireless'} polling saved at ${rate} Hz`,tone:'saved'});notify(`${transport==='wired'?'Wired':'Wireless'} polling rate saved to the current profile`)
     } catch (error) {
-      setSelectedRate(previous); setOperation({text:'Polling-rate write failed',tone:'error'}); notify(String(error), true)
+      setSelectedRates(current=>({...current,[transport]:previous}));setOperation({text:'Polling-rate write failed',tone:'error'});notify(String(error),true)
     } finally { setSavingRate(false) }
   }
   return <div className="hub-dashboard page-enter">
     <section className="hub-panel three-product-view"><Suspense fallback={null}><ThreeMouseViewer active={active} onPrepared={onModelPrepared}/></Suspense></section>
-    <section className="hub-panel rate-overview"><div><h2>Stored polling rate</h2><p>Select the USB report frequency for the active onboard profile.</p><InlineStatus state={operation} idle="Stored in the active profile"/></div><div className={`rate-track ${savingRate ? 'saving' : ''}`}>{rates.slice().reverse().map(rate=><button key={rate} className={selectedRate===rate?'active':''} onClick={()=>chooseRate(rate)} disabled={savingRate}>{rate}<small>Hz</small></button>)}</div></section>
+    <section className="hub-panel rate-overview"><div className="rate-overview-copy"><h2>Saved polling rates</h2><p>The active transport is applied live and saved to the current onboard profile.</p><InlineStatus state={operation} idle={`Live measurement: ${state.pollingRate?`${state.pollingRate} Hz`:'waiting for movement'}`}/></div><div className="transport-rate-list">{(['wireless','wired'] as const).map(transport=><section key={transport} className={`transport-rate-row ${state.connectionType===transport?'connected':'inactive'}`}><header><div><span>{transport.toUpperCase()}</span><strong>{selectedRates[transport]?`${selectedRates[transport]} Hz`:'Not saved'}</strong></div><small>{state.connectionType===transport?'Saved setting · current connection':`Connect over ${transport} to change`}</small></header><div className={`rate-track ${savingRate?'saving':''}`}>{rates.slice().reverse().map(rate=><button key={rate} className={selectedRates[transport]===rate?'active':''} onClick={()=>chooseRate(transport,rate)} disabled={savingRate||state.connectionType!==transport}>{rate}<small>Hz</small></button>)}</div></section>)}</div></section>
   </div>
 }
 
 function DPIPage({notify}: {notify: (s: string, e?: boolean) => void}) {
   const [activeProfile,setActiveProfile] = useState<Profile>()
   const [drafts,setDrafts] = useState<DPIStage[]>([]), [selected,setSelected] = useState(0)
-  const [busy,setBusy] = useState(true), [saving,setSaving] = useState<number>()
+  const [defaultStage,setDefaultStage] = useState(0), [surface,setSurface] = useState<AdvancedSettings>()
+  const [busy,setBusy] = useState(true), [saving,setSaving] = useState(false), [dirty,setDirty] = useState(false)
   const [operation,setOperation] = useState<OperationState>()
-  const load = useCallback(async()=>{setBusy(true);try{const list=await api.profiles();const active=list.find(profile=>profile.active)||list[0];setActiveProfile(active);setDrafts(active?.dpiStages||[]);if(active)setSelected(active.currentDpiStage>=0?active.currentDpiStage:active.defaultDpiStage)}catch(error){notify(String(error),true)}finally{setBusy(false)}},[notify])
+  const load = useCallback(async()=>{setBusy(true);try{const [list,advanced]=await Promise.all([api.profiles(),api.advanced().catch(()=>undefined)]);const active=list.find(profile=>profile.active)||list[0];setActiveProfile(active);setDrafts(active?.dpiStages||[]);setSurface(advanced);if(active){setSelected(active.currentDpiStage>=0?active.currentDpiStage:active.defaultDpiStage);setDefaultStage(active.defaultDpiStage)}setDirty(false)}catch(error){notify(String(error),true)}finally{setBusy(false)}},[notify])
   useEffect(()=>{load()},[load])
-  const edit=(index:number,value:number)=>setDrafts(current=>current.map(stage=>stage.index===index?{...stage,x:value,y:value}:stage))
-  const save=async(stage:DPIStage,enabled=stage.enabled)=>{
-    if(!activeProfile||saving!==undefined)return
-    const x=Math.max(100,Math.min(44000,stage.x)),y=Math.max(100,Math.min(44000,stage.y)),updatedStage={...stage,x,y,enabled}
-    const previousLiveIndex=activeProfile.currentDpiStage>=0?activeProfile.currentDpiStage:activeProfile.defaultDpiStage
-    const makeDefault=enabled&&stage.index===activeProfile.defaultDpiStage
-    setSaving(stage.index);setOperation({text:`Writing slot ${stage.index+1}…`,tone:'saving'})
-    try{
-      const actualSector=await api.updateDPIStage(activeProfile.sector,stage.index,x,y,enabled,makeDefault)
-      const nextStages=drafts.map(item=>item.index===stage.index?updatedStage:item)
-      const liveStage=nextStages.find(item=>item.index===previousLiveIndex&&item.enabled)||nextStages.find(item=>item.index===activeProfile.defaultDpiStage&&item.enabled)||nextStages.find(item=>item.enabled)
-      if(liveStage&&!(makeDefault&&liveStage.index===stage.index))await api.selectDPI(actualSector,liveStage.x)
-      setDrafts(nextStages);if(liveStage)setSelected(liveStage.index)
-      setActiveProfile(current=>current?{...current,sector:actualSector,dpiStages:nextStages,currentDpiStage:liveStage?.index??current.currentDpiStage,dpiX:liveStage?.x||current.dpiX,dpiY:liveStage?.y||current.dpiY}:current)
-      setOperation({text:`Slot ${stage.index+1} stored onboard`,tone:'saved'});notify(`DPI slot ${stage.index+1} saved to the mouse`)
-    }catch(error){setOperation({text:'DPI write failed',tone:'error'});notify(String(error),true);load()}finally{setSaving(undefined)}
-  }
-  const selectStage=async(stage:DPIStage)=>{if(!activeProfile||saving!==undefined||!stage.enabled)return;setSaving(stage.index);setSelected(stage.index);setOperation({text:`Selecting slot ${stage.index+1} and storing it onboard…`,tone:'saving'});try{const actualSector=await api.updateDPIStage(activeProfile.sector,stage.index,stage.x,stage.y,true,true);setActiveProfile(current=>current?{...current,sector:actualSector,defaultDpiStage:stage.index,currentDpiStage:stage.index,dpiX:stage.x,dpiY:stage.y}:current);setOperation({text:`Slot ${stage.index+1} is active and stored as default`,tone:'saved'});notify(`DPI slot ${stage.index+1} selected and stored onboard`)}catch(error){setOperation({text:'Could not select the DPI slot',tone:'error'});notify(String(error),true);load()}finally{setSaving(undefined)}}
+  const updateStage=(index:number,change:Partial<DPIStage>)=>{setDrafts(current=>current.map(stage=>stage.index===index?{...stage,...change}:stage));setDirty(true)}
+  const chooseDefault=(stage:DPIStage)=>{if(!stage.enabled||saving||defaultStage===stage.index)return;setDefaultStage(stage.index);setDirty(true);setOperation({text:`Slot ${stage.index+1} will become the profile default when saved`})}
+  const preview=async(stage:DPIStage)=>{if(!activeProfile||saving||!stage.enabled)return;setSaving(true);setSelected(stage.index);setOperation({text:`Applying slot ${stage.index+1}…`,tone:'saving'});try{await api.selectDPI(activeProfile.sector,Math.max(100,Math.min(44000,stage.x)),stage.lod);setActiveProfile(current=>current?{...current,currentDpiStage:stage.index,dpiX:stage.x,dpiY:stage.y}:current);setOperation({text:`Slot ${stage.index+1} is active`,tone:'saved'})}catch(error){setOperation({text:'Could not select the DPI slot',tone:'error'});notify(String(error),true)}finally{setSaving(false)}}
+  const toggle=(stage:DPIStage)=>{if(stage.enabled&&drafts.filter(item=>item.enabled).length===1)return;const enabled=!stage.enabled;updateStage(stage.index,{enabled});if(!enabled&&defaultStage===stage.index){const replacement=drafts.find(item=>item.index!==stage.index&&item.enabled);if(replacement)setDefaultStage(replacement.index)}if(!enabled&&selected===stage.index){const replacement=drafts.find(item=>item.index!==stage.index&&item.enabled);if(replacement)setSelected(replacement.index)}}
+  const saveProfile=async()=>{if(!activeProfile||saving||!dirty)return;setSaving(true);setOperation({text:'Saving DPI settings to the current profile…',tone:'saving'});try{const normalized=drafts.map(stage=>({...stage,x:Math.max(100,Math.min(44000,stage.x)),y:Math.max(100,Math.min(44000,stage.y))}));const actualSector=await api.saveDPIToProfile(activeProfile.sector,normalized,defaultStage,selected);setDrafts(normalized);setActiveProfile(current=>current?{...current,sector:actualSector,dpiStages:normalized,currentDpiStage:selected,defaultDpiStage:defaultStage}:current);setDirty(false);setOperation({text:'DPI settings saved to the current profile',tone:'saved'});notify('DPI settings saved to the current profile')}catch(error){setOperation({text:'DPI profile save failed',tone:'error'});notify(String(error),true)}finally{setSaving(false)}}
   if(busy&&!activeProfile)return <Loader text="Reading active profile"/>
   if(!activeProfile)return <Loader text="No readable onboard profile was found"/>
   if(!activeProfile.hasDpiStages)return <div className="dpi-unsupported"><h1>DPI stages unavailable</h1><p>This onboard profile uses an older layout that does not safely expose five independent stages.</p></div>
+  const lodAvailable=Boolean(surface?.gamingSurfaceAvailable)&&surface?.gamingSurfaceMode!==4
+  const selectedStage=drafts.find(stage=>stage.index===selected)||drafts[0]
+  if(!selectedStage)return <Loader text="No DPI stages were found"/>
   return <div className="dpi-hub-page page-enter">
-    <main className="dpi-work-panel">
-      <header className="dpi-title"><div><h1>DPI</h1><p>Five sensitivity slots stored directly on the mouse.</p></div><div className="dpi-title-actions"><strong>{drafts.filter(stage=>stage.enabled).length} / 5 enabled</strong></div></header>
-      <div className="dpi-stage-head"><span>Slot</span><span>DPI</span><span>Enabled</span></div>
-      <div className="dpi-stage-list">{drafts.map(stage=><div key={stage.index} className={`dpi-stage-row onboard ${selected===stage.index?'selected':''} ${!stage.enabled?'disabled':''}`} onClick={()=>setSelected(stage.index)}>
-        <button className={`dpi-active-radio ${activeProfile.currentDpiStage===stage.index?'active':''}`} title="Select this DPI and store it as the onboard default" disabled={!stage.enabled||saving!==undefined} onClick={event=>{event.stopPropagation();selectStage(stage)}} />
-        <span className="dpi-stage-index" style={{borderColor:dpiColors[stage.index]}}>{stage.index+1}</span>
-        <input className="dpi-stage-range" type="range" min="100" max="44000" step="50" disabled={!stage.enabled||saving!==undefined} value={stage.x} onChange={event=>edit(stage.index,+event.target.value)} onPointerUp={event=>{const value=+event.currentTarget.value;save({...stage,x:value,y:value})}} />
-        <input className="dpi-stage-number" type="number" min="100" max="44000" step="50" disabled={!stage.enabled||saving!==undefined} value={stage.x} onChange={event=>edit(stage.index,+event.target.value)} onBlur={()=>save(stage)} onKeyDown={event=>{if(event.key==='Enter')save(stage)}}/>
-        <span className="dpi-unit">DPI</span>
-        <button className={`switch dpi-stage-switch ${stage.enabled?'on':''}`} disabled={saving!==undefined} onClick={event=>{event.stopPropagation();save(stage,!stage.enabled)}}><i/></button>
-      </div>)}</div>
-      <div className="dpi-save-note"><p>The filled circle is the active DPI and the slot restored from onboard memory. Mouse DPI controls cycle through enabled slots.</p><InlineStatus state={operation} idle="Changes are stored directly on the mouse"/></div>
-    </main>
+    <section className="dpi-stage-panel">
+      <header><div><span>SENSOR SETTINGS</span><h1>DPI stages</h1><p>Sensitivities stored in {friendlyName(activeProfile.name,'the current profile')}.</p></div><div className="profile-live-badge active"><i/>{drafts.filter(stage=>stage.enabled).length} enabled</div></header>
+      <div className="dpi-stage-overview">{drafts.map(stage=><article key={stage.index} aria-label={`DPI slot ${stage.index+1}`} className={`dpi-stage-card ${selected===stage.index?'selected':''} ${!stage.enabled?'disabled':''}`} onClick={()=>setSelected(stage.index)}>
+        <i className="dpi-slot-color" style={{background:dpiColors[stage.index]}}/>
+        <span className="dpi-slot-number">{String(stage.index+1).padStart(2,'0')}</span>
+        <span className="dpi-slot-copy"><strong>Slot {stage.index+1}</strong><small>{stage.enabled?'Available when cycling DPI':'Disabled'}</small></span>
+        <span className="dpi-slot-badges">{activeProfile.currentDpiStage===stage.index&&<em className="active">Active</em>}{defaultStage===stage.index&&<em>Default</em>}</span>
+        <i className={`dpi-slot-state ${stage.enabled?'on':''}`}/>
+        <div className="dpi-card-sensitivity"><input className="range" aria-label={`Slot ${stage.index+1} DPI slider`} type="range" min="100" max="44000" step="50" disabled={!stage.enabled||saving} value={stage.x} onChange={event=>updateStage(stage.index,{x:+event.target.value,y:+event.target.value})}/><label><input aria-label={`Slot ${stage.index+1} DPI`} type="number" min="100" max="44000" step="50" disabled={!stage.enabled||saving} value={stage.x} onChange={event=>updateStage(stage.index,{x:+event.target.value,y:+event.target.value})}/><span>DPI</span></label></div>
+      </article>)}</div>
+      <footer><span>Mouse DPI controls cycle through enabled slots.</span><strong>{drafts.filter(stage=>stage.enabled).length} of {drafts.length} available</strong></footer>
+    </section>
+    <aside className="dpi-editor-panel">
+      <header><div><span>SLOT SETTINGS</span><h2>Slot {selectedStage.index+1}</h2><p>Configure this slot’s onboard behavior.</p></div><i style={{background:dpiColors[selectedStage.index]}}>{String(selectedStage.index+1).padStart(2,'0')}</i></header>
+      <div className="dpi-editor-body">
+        <section className="dpi-editor-section"><div className="profile-setting-line"><div><span className="settings-kicker">SLOT BEHAVIOR</span><h3>Enabled</h3><p>Include this slot when cycling DPI on the mouse.</p></div><button className={`switch ${selectedStage.enabled?'on':''}`} disabled={saving||(selectedStage.enabled&&drafts.filter(item=>item.enabled).length===1)} onClick={()=>toggle(selectedStage)}><i/></button></div></section>
+        <section className={`dpi-editor-section ${!selectedStage.enabled?'control-disabled':''}`}><div className="dpi-setting-heading"><span>SENSOR</span><h3>Lift-off distance</h3><p>{lodAvailable?'Tracking cutoff when the mouse is lifted.':'Available when Gaming Surface is Auto or On.'}</p></div><div className="mapping-category-tabs dpi-lod-tabs">{[{value:1,label:'Low'},{value:2,label:'Medium'},{value:3,label:'High'}].map(option=><button key={option.value} type="button" className={selectedStage.lod===option.value?'selected':''} disabled={!selectedStage.enabled||saving||!lodAvailable} onClick={()=>updateStage(selectedStage.index,{lod:option.value})}>{option.label}</button>)}</div></section>
+        <section className={`dpi-editor-section dpi-slot-actions ${!selectedStage.enabled?'control-disabled':''}`}><div className="dpi-setting-heading"><span>PROFILE BEHAVIOR</span><h3>Active and default DPI</h3><p>Activate this slot now or make it the DPI used when the profile starts.</p></div><div><button className="button subtle" disabled={!selectedStage.enabled||saving||activeProfile.currentDpiStage===selectedStage.index} onClick={()=>preview(selectedStage)}>{activeProfile.currentDpiStage===selectedStage.index?'Active now':'Activate slot'}</button><button className="button subtle" disabled={!selectedStage.enabled||saving||defaultStage===selectedStage.index} onClick={()=>chooseDefault(selectedStage)}>{defaultStage===selectedStage.index?'Profile default':'Set as default'}</button></div></section>
+      </div>
+      <footer className="dpi-profile-footer"><div><InlineStatus state={operation} idle={dirty?'Unsaved changes':'Saved profile settings'}/></div><button className="button primary" disabled={!dirty||saving} onClick={saveProfile}>{saving?'Saving…':'Save to profile'}</button></footer>
+    </aside>
   </div>
 }
 
@@ -347,7 +337,7 @@ function OnboardModeLock({onOpenProfiles}: {onOpenProfiles:()=>void}) { return <
 
 export default function App() {
   const emptyCapabilities={battery:false,dpi:false,dpiStages:0,pollingRates:[],profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false}
-  const [page,setPage] = useState<Page>('dashboard'), [state,setState] = useState<DeviceState>({connected:false,permissionDenied:false,name:'',path:'',battery:0,charging:false,hasBattery:false,profile:'',dpiX:0,dpiY:0,pollingRate:0,configuredPollingRate:0,onboardModeAvailable:false,onboardModeEnabled:false,deviceId:'',modelId:'',capabilities:emptyCapabilities}), [devices,setDevices] = useState<DeviceSummary[]>([]), [toasts,setToasts] = useState<Toast[]>([]), [modelPrepared,setModelPrepared] = useState(false), [showDeviceLibrary,setShowDeviceLibrary] = useState(true)
+  const [page,setPage] = useState<Page>('dashboard'), [state,setState] = useState<DeviceState>({connected:false,permissionDenied:false,name:'',path:'',battery:0,charging:false,hasBattery:false,profile:'',dpiX:0,dpiY:0,pollingRate:0,configuredPollingRate:0,connectionType:'wired',wiredPollingRate:0,wirelessPollingRate:0,onboardModeAvailable:false,onboardModeEnabled:false,deviceId:'',modelId:'',capabilities:emptyCapabilities}), [devices,setDevices] = useState<DeviceSummary[]>([]), [toasts,setToasts] = useState<Toast[]>([]), [modelPrepared,setModelPrepared] = useState(false), [showDeviceLibrary,setShowDeviceLibrary] = useState(true)
   const notify = useCallback((text:string,error=false) => { const id=Date.now(); setToasts(t=>[...t,{id,text,error}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),3200) },[])
   const markModelPrepared = useCallback(() => setModelPrepared(true), [])
   useEffect(() => { api.state().then(setState).catch(()=>{});api.devices().then(setDevices).catch(()=>{});const offState=onDeviceUpdate(setState),offDevices=onDevicesUpdate(setDevices);return()=>{offState?.();offDevices?.()} },[])

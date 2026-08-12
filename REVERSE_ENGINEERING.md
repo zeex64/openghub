@@ -45,11 +45,12 @@ Functions (function index in the high nibble of byte 3):
 - `fn5` (0x50) getSensorDpi — current DPI (big-endian) at reply bytes 1–2.
 - `fn6` (0x60) setSensorDpi — `[sensor, Xhi, Xlo, Yhi, Ylo, lod]`.
 
-**The live setter (`fn6`) is a firmware no-op on this mouse.** Verified by
-measuring actual cursor counts while alternating 400/1600 DPI under steady
-motion → ratio 1.0 (no change), even with on-grid values and in Host mode. DPI
-is only settable via the **onboard profile** (below), which *does* apply and
-persist. (`getSensorDpi` also reports a stale value, so it can't confirm a set.)
+In Host mode, G HUB uses `fn6` for live DPI and lift-off distance. The captured
+LOD values are `0x01` = Low, `0x02` = Medium and `0x03` = High. The setting is
+available only while Gaming Surface is Auto or On. Earlier measurements that
+found `fn6` ineffective were made while profile ownership was still changing;
+wait briefly after entering Host mode before sending it. The getter can still
+report stale state, so it is not a reliable write confirmation.
 
 ## Report rate — `0x8061` ExtendedAdjustableReportRate
 
@@ -63,6 +64,13 @@ The live `fn3` setter **does** physically change the rate in **Host mode**
 ~998 Hz) — even though `fn2` keeps reporting the old value. But it's not
 persistent. The persistent rate lives in the **onboard profile** (below).
 
+G HUB exposes separate Wired and Wireless report-rate controls. Captures
+`SET_WIRED_REPORT_RATE.pcapng` and `SET_WIRELESS_REPORT_RATE.pcapng` contain the
+same live command — `fn3 [0x02]` for 500 Hz — and no profile-sector write. The
+transport is therefore selected by the connection carrying the HID++ command,
+not by an extra parameter. Software can set only the currently connected
+transport; the other value must be changed after reconnecting through it.
+
 ## Onboard profiles — `0x8100` OnboardProfiles
 
 - `fn0` (0x00) getInfo → `[memoryModel(=1), profileFmt, macro, count, oob,
@@ -73,6 +81,9 @@ persistent. The persistent rate lives in the **onboard profile** (below).
 - `fn3` (0x30) setCurrentProfile `[secHi, secLo]` / `fn4` (0x40) getCurrent
   profile. Switching profiles **reloads** their settings (this is how the rate
   visibly changes between profiles).
+- `fn12` (0xC0) setCurrentDpiIndex `[zeroBasedIndex]`. G HUB sends this after
+  its “Save DPI settings to current profile” sector write so the live DPI
+  selection remains distinct from the stored default index.
 - Memory access: `fn5` (0x50) read `[secHi, secLo, offHi, offLo]` → 16 bytes;
   `fn6` (0x60) begin-write `[secHi, secLo, 0,0, lenHi, lenLo]`; `fn7` (0x70)
   write 16 bytes; `fn8` (0x80) commit.
@@ -85,7 +96,9 @@ persistent. The persistent rate lives in the **onboard profile** (below).
 4-byte entries `[sectorHi, sectorLo, enabled, pad]`, terminated by `0xFFFF`.
 This unit: slots → sectors `0x0001..0x0005`, `enabled` = `0x01`/`0x00`.
 To enable/disable a profile, flip the `enabled` byte (offset `slot*4+2`),
-recompute CRC, write the sector.
+recompute CRC, write the sector. If RAM is uninitialized, G HUB first clones
+all five ROM profile sectors and the ROM control table into RAM; cloning only
+the current slot makes the remaining slots disappear.
 
 ### Profile sector layouts (size 255)
 
@@ -115,43 +128,34 @@ Caveats specific to this device vs Solaar's generic layout:
   `0x2000`).
 - The **button table is at offset 48**, not Solaar's generic 32.
 
-#### Pristine/wired factory layout
+#### Superstrike extended-DPI layout
 
-A wired unit that had never been configured by G HUB used five 5-byte DPI
-entries beginning at offset 4:
+The new factory and “Save DPI settings to current profile” captures resolve
+the five-byte records unambiguously. They begin at offset 3:
 
 ```
-[Xlo, Xhi, Ylo, Yhi, 0x02]
+[LOD, Xlo, Xhi, Ylo, Yhi]
 ```
 
-The low `0x02` bit marks an enabled stage; clearing that bit removes the stage
-from the device's Next/Previous/Cycle DPI sequence. Byte 1 selects the default
-stage loaded with the profile. At least one stage must remain enabled.
+LOD uses the same Low/Medium/High values as live feature `0x2202`. A DPI word
+above the sensor maximum (normally `0xFFFF`) marks an unused stage; LOD is not
+an enable flag. Byte 1 selects the stored default stage and byte 2 is the shift
+stage. At least one stage must remain enabled.
 
 The factory ladder was 800, 1200, 1600, 2400 and 3200 DPI. Its current profile
 was ROM sector `0x0101`; RAM control sector `0x0000` was entirely `0xFF`, so no
 editable RAM profiles existed. Factory ROM profiles may end in `0xFFFF` rather
 than a stored CCITT CRC and must not be rejected solely for that reason.
 
-On the first edit, the app clones the active ROM sector into RAM, patches only
-the requested stage, writes a valid CCITT CRC, creates a minimal RAM control
-table pointing at the new enabled profile, and selects that RAM sector.
-Subsequent edits use the normal read/patch/CRC/write path.
+On the first profile enable/disable operation, the app clones all factory
+sectors and their control table before changing the requested flag. Subsequent
+edits use the normal read/patch/CRC/write path.
 
-The mouse's current stage is volatile state and is not exposed by the profile
-sector. The desktop app therefore treats selection as a change to the stored
-default: it updates byte 1, reloads the profile and writes the selected value
-through Extended Adjustable DPI (`0x2202`) so the change is both immediate and
-persistent. On connection the app also applies the stored default explicitly;
-some firmware reports the correct resolution index while leaving the sensor at
-its previous volatile value when onboard mode is re-entered. For the same
-reason, normal desktop shutdown closes the HID handle without forcing the
-device out of host mode; changing modes during shutdown would replace the
-selected DPI with that stale stage.
-
-Editing any stage also reloads the profile sector. The UI records the live
-stage before that write and reapplies it afterward, since the reload may select
-a different stage even when the edited stage was already active.
+The mouse's current stage is volatile state and is distinct from byte 1's
+stored default. DPI edits remain live Host-mode settings until the explicit
+save action writes all five records once, then calls `fn12` with the current
+stage. Normal desktop shutdown closes the HID handle without forcing a mode
+change, which avoids replacing that live selection with stale firmware state.
 
 ### Report-rate byte encoding (the surprising one)
 

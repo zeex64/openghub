@@ -65,7 +65,8 @@ type Driver interface {
 	Matches(hidpp.DeviceIdentity, FeatureSet) bool
 	Capabilities(FeatureSet) Capabilities
 	Profiles(*hidpp.Device) ([]hidpp.Profile, error)
-	WriteDPIStage(*hidpp.Device, int, int, int, int, bool, bool) (int, error)
+	WriteDPIStage(*hidpp.Device, int, int, int, int, byte, bool, bool) (int, error)
+	SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int) (int, error)
 	WriteResolution(*hidpp.Device, int, int, int) error
 	SetReportRate(*hidpp.Device, int, int) (int, error)
 	SetCurrentProfile(*hidpp.Device, int) error

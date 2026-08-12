@@ -40,12 +40,30 @@ func TestNormalizeDeviceNameFixesFirmwareTypo(t *testing.T) {
 	}
 }
 
+func TestConnectionTypeDistinguishesReceiverAndCable(t *testing.T) {
+	if got := connectionType(hidpp.DeviceIdentity{ProductID: 0xC54D}); got != "wireless" {
+		t.Fatalf("receiver connection = %q, want wireless", got)
+	}
+	if got := connectionType(hidpp.DeviceIdentity{ProductID: 0x40BD}); got != "wireless" {
+		t.Fatalf("paired Superstrike endpoint = %q, want wireless", got)
+	}
+	if got := connectionType(hidpp.DeviceIdentity{ProductID: 0xC09B, PhysicalSlot: 1}); got != "wireless" {
+		t.Fatalf("paired child connection = %q, want wireless", got)
+	}
+	if got := connectionType(hidpp.DeviceIdentity{ProductID: 0xC09B}); got != "wired" {
+		t.Fatalf("direct connection = %q, want wired", got)
+	}
+}
+
 func TestStoredDefaultDPIReturnsEnabledResolutionIndex(t *testing.T) {
 	profile := hidpp.Profile{HasDPIStages: true, ResIndex: 1}
 	profile.DPIStages[0] = hidpp.DPIStage{Index: 0, X: 800, Y: 800, Enabled: true}
 	profile.DPIStages[1] = hidpp.DPIStage{Index: 1, X: 1600, Y: 1600, Enabled: true}
 	if got, ok := storedDefaultDPI(profile); !ok || got != 1600 {
 		t.Fatalf("storedDefaultDPI() = %d, %v; want 1600, true", got, ok)
+	}
+	if got, ok := storedDefaultDPIStage(profile); !ok || got != 1 {
+		t.Fatalf("storedDefaultDPIStage() = %d, %v; want slot index 1, true", got, ok)
 	}
 }
 
@@ -55,13 +73,18 @@ func TestStoredDefaultDPIRejectsDisabledStage(t *testing.T) {
 	if got, ok := storedDefaultDPI(profile); ok {
 		t.Fatalf("storedDefaultDPI() = %d, true; want false", got)
 	}
+	if got, ok := storedDefaultDPIStage(profile); ok {
+		t.Fatalf("storedDefaultDPIStage() = %d, true; want false", got)
+	}
 }
 
 func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "openghub", "settings.json")
 	want := storedPreferences{Devices: map[string]advancedPreferences{"superstrike/unit-1": {
-		GamingSurfaceMode: intPointer(int(hidpp.GamingSurfaceOff)),
-		BhopWindowMS:      intPointer(0),
+		GamingSurfaceMode:  intPointer(int(hidpp.GamingSurfaceOff)),
+		BhopWindowMS:       intPointer(0),
+		WiredReportRate:    intPointer(8000),
+		WirelessReportRate: intPointer(2000),
 	}}}
 	if err := writeStoredPreferences(path, want); err != nil {
 		t.Fatal(err)
@@ -76,6 +99,12 @@ func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 	}
 	if advanced.BhopWindowMS == nil || *advanced.BhopWindowMS != 0 {
 		t.Fatalf("bhop preference = %v, want explicit off", advanced.BhopWindowMS)
+	}
+	if advanced.WiredReportRate == nil || *advanced.WiredReportRate != 8000 {
+		t.Fatalf("wired report rate = %v, want 8000", advanced.WiredReportRate)
+	}
+	if advanced.WirelessReportRate == nil || *advanced.WirelessReportRate != 2000 {
+		t.Fatalf("wireless report rate = %v, want 2000", advanced.WirelessReportRate)
 	}
 }
 
@@ -124,5 +153,13 @@ func TestStoredAdvancedPreferenceValidation(t *testing.T) {
 		if validStoredBhopWindow(window) {
 			t.Fatalf("bhop window %d should be invalid", window)
 		}
+	}
+	for _, rate := range hidpp.ReportRates {
+		if !validStoredReportRate(rate) {
+			t.Fatalf("report rate %d should be valid", rate)
+		}
+	}
+	if validStoredReportRate(333) {
+		t.Fatal("unsupported report rate should be invalid")
 	}
 }
