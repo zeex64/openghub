@@ -8,8 +8,7 @@ export const g502HeroDevice: CatalogDevice = {
   productIds: [0xc08b],
   name: 'G502 HERO / SE',
   family: 'G Series',
-  availability: 'development',
+  availability: 'supported',
   image: topImage,
   sideImage,
 }
-

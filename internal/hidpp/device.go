@@ -35,7 +35,14 @@ func Discover() (devices []*Device, permDenied bool, err error) {
 		// Try the directly-attached index first, then receiver slots. Use a
 		// short timeout for the probe pings so a non-responding index (e.g.
 		// 0xFF on a dj child node) doesn't stall discovery for the full 4s.
-		for _, idx := range []byte{0x01, 0xFF, 0x02, 0x03, 0x04, 0x05, 0x06} {
+		indexes := []byte{0x01, 0xFF, 0x02, 0x03, 0x04, 0x05, 0x06}
+		// A directly attached G502 HERO uses the HID++ wildcard address. Trying
+		// it first avoids a full probe timeout every time this well-known USB
+		// endpoint is discovered.
+		if info.ProductID == 0xC08B {
+			indexes = []byte{0xFF, 0x01}
+		}
+		for _, idx := range indexes {
 			d, oerr := Open(node, idx)
 			if oerr != nil {
 				if os.IsPermission(oerr) {

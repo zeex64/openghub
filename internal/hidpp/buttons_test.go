@@ -12,3 +12,15 @@ func TestSideButtonEncoding(t *testing.T) {
 		t.Fatalf("Forward encoded as % x", forward)
 	}
 }
+
+func TestClassicFunctionEncoding(t *testing.T) {
+	shift := (ButtonAction{Kind: ButtonFunction, Code: 0x07}).encodeClassic()
+	if shift != [4]byte{0x90, 0x07, 0xFF, 0xFF} {
+		t.Fatalf("DPI Shift encoded as % x", shift)
+	}
+
+	superstrikeShift := (ButtonAction{Kind: ButtonFunction, Code: 0x07}).encode()
+	if superstrikeShift != [4]byte{0x90, 0x07, 0xFF, 0x00} {
+		t.Fatalf("Superstrike DPI Shift encoded as % x", superstrikeShift)
+	}
+}

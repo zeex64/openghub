@@ -95,6 +95,27 @@ func TestDecodeSuperstrikeCaptureLayoutAndLOD(t *testing.T) {
 	}
 }
 
+func TestDecodeG502ProfileFormat2Capture(t *testing.T) {
+	raw := make([]byte, 255)
+	copy(raw, []byte{
+		0x01, 0x01, 0x00, // 1ms, default slot 2, shift slot 1
+		0xB0, 0x04, 0x60, 0x09, 0x80, 0x0C, 0x00, 0x19, 0x00, 0x00,
+		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+	})
+	copy(raw[32:], []byte{0x80, 0x01, 0x00, 0x01, 0x80, 0x01, 0x00, 0x02})
+	p := decodeProfileFormat(1, raw, 2, 11)
+	if p.ReportRateHz != 1000 || p.ResIndex != 1 || p.ShiftIndex != 0 || p.DPIX != 2400 || !p.HasDPIStages {
+		t.Fatalf("decoded G502 profile = rate %d default %d shift %d DPI %d stages %v", p.ReportRateHz, p.ResIndex, p.ShiftIndex, p.DPIX, p.HasDPIStages)
+	}
+	want := [5]int{1200, 2400, 3200, 6400, 0}
+	if p.DPI != want || p.DPIStages[4].Enabled {
+		t.Fatalf("G502 stages = %v enabled[4]=%v, want %v/false", p.DPI, p.DPIStages[4].Enabled, want)
+	}
+	if p.Buttons[0].Describe() != "Left Click" || p.Buttons[1].Describe() != "Right Click" {
+		t.Fatalf("G502 buttons decoded from wrong offset: %q / %q", p.Buttons[0].Describe(), p.Buttons[1].Describe())
+	}
+}
+
 func TestProfileEnableFlagMatchesCapturedControlTable(t *testing.T) {
 	control := make([]byte, 255)
 	copy(control, []byte{

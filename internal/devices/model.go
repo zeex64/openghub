@@ -33,6 +33,7 @@ func ProbeFeatures(device *hidpp.Device) FeatureSet {
 		hidpp.FeatReprogControls, hidpp.FeatAdjustableDPI, hidpp.FeatExtAdjDPI,
 		hidpp.FeatMouseTuning, hidpp.FeatReportRate, hidpp.FeatExtReportRate,
 		hidpp.FeatBunnyHopping, hidpp.FeatOnboardProfile, hidpp.FeatAnalogButtons,
+		hidpp.FeatRGBEffects, hidpp.FeatLEDControl,
 	}
 	out := make(FeatureSet)
 	for _, id := range known {
@@ -47,13 +48,21 @@ type Capabilities struct {
 	Battery       bool  `json:"battery"`
 	DPI           bool  `json:"dpi"`
 	DPIStages     int   `json:"dpiStages"`
+	DPIMin        int   `json:"dpiMin"`
+	DPIMax        int   `json:"dpiMax"`
+	DPIStep       int   `json:"dpiStep"`
+	DPILiftOff    bool  `json:"dpiLiftOff"`
 	PollingRates  []int `json:"pollingRates"`
+	SeparateRates bool  `json:"separatePollingRates"`
 	Profiles      bool  `json:"profiles"`
 	OnboardMode   bool  `json:"onboardMode"`
 	ButtonMapping bool  `json:"buttonMapping"`
 	Haptics       bool  `json:"haptics"`
 	GamingSurface bool  `json:"gamingSurface"`
 	Bhop          bool  `json:"bhop"`
+	Lighting      bool  `json:"lighting"`
+	StartupEffect bool  `json:"startupEffect"`
+	DPILighting   bool  `json:"dpiLighting"`
 }
 
 // Driver owns model-specific profile interpretation and mutation. Generic
@@ -66,7 +75,7 @@ type Driver interface {
 	Capabilities(FeatureSet) Capabilities
 	Profiles(*hidpp.Device) ([]hidpp.Profile, error)
 	WriteDPIStage(*hidpp.Device, int, int, int, int, byte, bool, bool) (int, error)
-	SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int) (int, error)
+	SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int, int) (int, error)
 	WriteResolution(*hidpp.Device, int, int, int) error
 	SetReportRate(*hidpp.Device, int, int) (int, error)
 	SetCurrentProfile(*hidpp.Device, int) error
@@ -86,7 +95,7 @@ func Match(identity hidpp.DeviceIdentity, features FeatureSet) Driver {
 
 var registeredDrivers = []Driver{
 	superstrikeDriver{},
-	unsupportedDriver{id: "g502-se-hero", name: "G502 HERO / SE", productIDs: []uint16{0xC08B}},
+	g502HeroDriver{},
 }
 
 func genericCapabilities(features FeatureSet) Capabilities {
@@ -100,6 +109,9 @@ func genericCapabilities(features FeatureSet) Capabilities {
 		Haptics:       features.Has(hidpp.FeatAnalogButtons),
 		GamingSurface: features.Has(hidpp.FeatMouseTuning),
 		Bhop:          features.Has(hidpp.FeatBunnyHopping),
+	}
+	if out.DPI {
+		out.DPIMin, out.DPIMax, out.DPIStep = 100, hidpp.MaxDPI, 50
 	}
 	if features.Has(hidpp.FeatReportRate) || features.Has(hidpp.FeatExtReportRate) || features.Has(hidpp.FeatOnboardProfile) {
 		out.PollingRates = append([]int(nil), hidpp.ReportRates...)

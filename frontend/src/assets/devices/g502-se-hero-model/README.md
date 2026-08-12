@@ -1,7 +1,6 @@
 # G502 HERO / SE model assets
 
-These assets were supplied for future G502 support and are intentionally not
-loaded by the application yet.
+These assets supply the interactive G502 HERO view on the Home page.
 
 ## Contents
 
@@ -15,13 +14,13 @@ The OBJ geometry is preserved unchanged. Textures were resized from 2048 px to
 1024 px and converted to WebP so the staged asset set is about 3.5 MB instead
 of roughly 36 MB.
 
-## Material caveat
+## Material assignment
 
 Both OBJ files reference `model_0.mtl` or `model_1.mtl`, but those material
-files were not present in the supplied folder. The OBJ files also contain no
-`usemtl` directives. The matching numbers suggest that `model_0.obj` belongs
-with Material 001 and `model_1.obj` with Material 002, but that assignment must
-be visually verified before the model is integrated or converted to GLB.
+files were not present in the supplied folder. The viewer therefore restores
+the association from the UV data: Material 002 belongs to `model_0.obj` (its
+UVs cover the Logitech logo and DPI-indicator emissive pixels), while Material
+001 belongs to `model_1.obj`.
 
 Confirm that the model and textures may be redistributed before including them
 in a public release.

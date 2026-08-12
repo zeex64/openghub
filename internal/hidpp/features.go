@@ -13,6 +13,7 @@ const (
 	FeatBatteryStatus  = 0x1000 // BatteryUnifiedLevelStatus (older)
 	FeatBatteryVoltage = 0x1001
 	FeatUnifiedBattery = 0x1004
+	FeatLEDControl     = 0x1300
 	FeatReprogControls = 0x1B04 // remappable buttons (ReprogControlsV4)
 	FeatAdjustableDPI  = 0x2201
 	FeatExtAdjDPI      = 0x2202
@@ -43,6 +44,7 @@ var featureNames = map[uint16]string{
 	0x1000:          "BatteryUnifiedLevelStatus",
 	0x1001:          "BatteryVoltage",
 	0x1004:          "UnifiedBattery",
+	0x1300:          "LEDControl",
 	0x1500:          "ForcePairing",
 	0x1602:          "PasswordOrAuth?",
 	0x1801:          "ManufacturingMode",

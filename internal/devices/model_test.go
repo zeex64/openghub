@@ -15,8 +15,15 @@ func TestMatchSuperstrikeByName(t *testing.T) {
 
 func TestMatchG502HeroByProductID(t *testing.T) {
 	driver := Match(hidpp.DeviceIdentity{ProductID: 0xC08B, Name: "Logitech G502 HERO"}, FeatureSet{})
-	if driver.ID() != "g502-se-hero" || driver.Supported() {
-		t.Fatalf("Match() = %s supported=%v, want unsupported g502-se-hero", driver.ID(), driver.Supported())
+	if driver.ID() != "g502-se-hero" || !driver.Supported() {
+		t.Fatalf("Match() = %s supported=%v, want supported g502-se-hero", driver.ID(), driver.Supported())
+	}
+}
+
+func TestG502Capabilities(t *testing.T) {
+	caps := (g502HeroDriver{}).Capabilities(FeatureSet{})
+	if !caps.DPI || !caps.Profiles || !caps.ButtonMapping || caps.DPIMax != 25600 || caps.DPILiftOff || caps.SeparateRates {
+		t.Fatalf("Capabilities() = %+v", caps)
 	}
 }
 

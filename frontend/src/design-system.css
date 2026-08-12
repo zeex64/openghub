@@ -56,6 +56,28 @@
 .rate-track.saving { opacity: .62; }
 .rate-track button small { display: inline; margin: 0 0 0 4px; vertical-align: baseline; }
 
+/* The wired G502 has four report-rate choices, so give them a compact device
+   panel instead of reserving a two-transport strip beneath the 3D view. */
+.hub-dashboard.g502-dashboard { grid-template-columns: minmax(0,1.65fr) minmax(310px,.65fr); grid-template-rows: minmax(0,1fr); }
+.hub-dashboard.g502-dashboard .three-product-view { grid-column: 1; grid-row: 1; }
+.g502-dashboard .rate-overview {
+  grid-column: 2; grid-row: 1; display: flex; flex-direction: column; align-items: stretch;
+  min-height: 0; padding: 26px 24px;
+}
+.g502-dashboard .rate-overview-copy { align-self: stretch; padding: 0 0 22px; border-bottom: 1px solid var(--hub-fg-5); }
+.g502-dashboard .transport-rate-list { display: block; flex: 1; border: 0; }
+.g502-dashboard .transport-rate-row {
+  display: flex; flex-direction: column; align-items: stretch; height: 100%; padding: 22px 0 0;
+  background: transparent; box-shadow: none;
+}
+.g502-dashboard .transport-rate-row > header div { display: block; }
+.g502-dashboard .transport-rate-row > header strong { display: block; margin-top: 7px; font-size: 22px; }
+.g502-dashboard .transport-rate-row > header small { margin-top: 7px; }
+.g502-dashboard .transport-rate-row .rate-track {
+  display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; height: auto; margin-top: 24px;
+}
+.g502-dashboard .rate-track button { min-width: 0; height: 62px; }
+
 @media (max-width: 1100px) {
   .rate-overview { grid-template-columns: 195px minmax(0,1fr); padding-inline: 16px; }
   .transport-rate-row { grid-template-columns: 125px minmax(0,1fr); gap: 8px; padding-inline: 9px; }
@@ -473,6 +495,22 @@
 .three-stage-status { position: absolute; z-index: 3; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--hub-muted); font-size: 10px; transition: opacity var(--motion-base) ease; }
 .three-stage-status i { width: 8px; height: 8px; border: 1px solid rgba(101,186,255,.34); border-top-color: #65baff; border-radius: 50%; animation: spin .8s linear infinite; }
 .three-stage-status.error { color: #f2a4a4; }
+
+.g502-product-view { position: relative; display: grid; place-items: center; overflow: hidden; }
+.g502-product-view > img { width: min(72%, 620px); height: 82%; object-fit: contain; filter: drop-shadow(0 28px 34px rgba(0,0,0,.55)); }
+.lighting-manager { display: grid; grid-template-columns: minmax(420px,1.35fr) minmax(330px,1fr); height: 100%; gap: 1px; background: var(--hub-fg-5); }
+.lighting-preview-panel { position: relative; min-width: 0; overflow: hidden; background: #1e1e20; }
+.lighting-preview-panel > header { position: absolute; z-index: 2; top: 24px; left: 26px; }
+.lighting-preview-panel > header span { color: var(--hub-muted); font-size: 9px; letter-spacing: .1em; }
+.lighting-preview-panel > header h1 { margin: 8px 0 5px; font-size: 24px; }
+.lighting-preview-panel > header p { margin: 0; color: var(--hub-muted); font-size: 10px; }
+.lighting-preview-panel > img { position: absolute; z-index: 1; inset: 15% 8% 7%; width: 84%; height: 78%; object-fit: contain; filter: drop-shadow(0 25px 35px #000); }
+.lighting-glow { position: absolute; left: 37%; top: 37%; width: 26%; aspect-ratio: 1; border-radius: 50%; opacity: .23; filter: blur(42px); }
+.lighting-control-panel > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lighting-control-panel > footer .button { flex: none; }
+.lighting-color-row { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; color: var(--hub-fg-60); font-size: 10px; }
+.lighting-color-row input { width: 74px; height: 34px; padding: 2px; border: 1px solid var(--hub-fg-12); background: #18181a; }
+.mapping-control-select { min-width: 210px; height: 34px; margin-top: 12px; padding: 0 10px; border: 1px solid var(--hub-fg-12); color: #fff; background: #18181a; font-size: 10px; }
 
 @keyframes hub-page-enter {
   from { opacity: 0; transform: translateY(5px) scale(.998); }

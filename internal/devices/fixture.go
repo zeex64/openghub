@@ -81,6 +81,7 @@ type FixtureProfileInfo struct {
 	SectorSize int `json:"sectorSize"`
 	Count      int `json:"count"`
 	Buttons    int `json:"buttons"`
+	Format     int `json:"format"`
 }
 
 type FixtureSector struct {
@@ -157,7 +158,7 @@ func (fixture *ProbeFixture) captureOnboard(device *hidpp.Device) {
 		fixture.Errors = append(fixture.Errors, "profile info: "+err.Error())
 		return
 	}
-	onboard.Info = FixtureProfileInfo{SectorSize: info.SectorSize, Count: info.Count, Buttons: info.Buttons}
+	onboard.Info = FixtureProfileInfo{SectorSize: info.SectorSize, Count: info.Count, Buttons: info.Buttons, Format: info.Format}
 	candidates := []int{0x0000, 0x0100}
 	for index := 1; index <= info.Count; index++ {
 		candidates = append(candidates, index, 0x0100+index)

@@ -21,6 +21,8 @@ func (superstrikeDriver) Matches(identity hidpp.DeviceIdentity, features Feature
 func (superstrikeDriver) Capabilities(features FeatureSet) Capabilities {
 	out := genericCapabilities(features)
 	out.DPIStages = 5
+	out.DPILiftOff = true
+	out.SeparateRates = true
 	out.Profiles = true
 	out.OnboardMode = true
 	out.ButtonMapping = true
@@ -35,7 +37,7 @@ func (superstrikeDriver) WriteDPIStage(device *hidpp.Device, sector, stage, x, y
 	return device.WriteProfileDPIStage(sector, stage, x, y, lod, enabled, makeDefault)
 }
 
-func (superstrikeDriver) SaveDPISettings(device *hidpp.Device, sector int, stages []hidpp.DPIStage, defaultStage, currentStage int) (int, error) {
+func (superstrikeDriver) SaveDPISettings(device *hidpp.Device, sector int, stages []hidpp.DPIStage, defaultStage, currentStage, _ int) (int, error) {
 	return device.WriteProfileDPISettings(sector, stages, defaultStage, currentStage)
 }
 

@@ -31,7 +31,7 @@ func (unsupportedDriver) Profiles(*hidpp.Device) ([]hidpp.Profile, error) {
 func (unsupportedDriver) WriteDPIStage(*hidpp.Device, int, int, int, int, byte, bool, bool) (int, error) {
 	return 0, unsupported("DPI-stage writes")
 }
-func (unsupportedDriver) SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int) (int, error) {
+func (unsupportedDriver) SaveDPISettings(*hidpp.Device, int, []hidpp.DPIStage, int, int, int) (int, error) {
 	return 0, unsupported("DPI-settings save")
 }
 func (unsupportedDriver) WriteResolution(*hidpp.Device, int, int, int) error {

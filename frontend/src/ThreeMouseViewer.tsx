@@ -1,15 +1,27 @@
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
 import modelUrl from './assets/model/SUPERSTRIKE.glb?url'
 import atlasTextureUrl from './assets/model/SUPERSTRIKE_ATLAS.jpg?url'
+import g502BodyUrl from './assets/devices/g502-se-hero-model/model_0.obj?url'
+import g502DetailsUrl from './assets/devices/g502-se-hero-model/model_1.obj?url'
+import g502BodyColorUrl from './assets/devices/g502-se-hero-model/material-001-basecolor.webp?url'
+import g502BodyMetallicUrl from './assets/devices/g502-se-hero-model/material-001-metallic.webp?url'
+import g502BodyNormalUrl from './assets/devices/g502-se-hero-model/material-001-normal.webp?url'
+import g502BodyRoughnessUrl from './assets/devices/g502-se-hero-model/material-001-roughness.webp?url'
+import g502DetailColorUrl from './assets/devices/g502-se-hero-model/material-002-basecolor.webp?url'
+import g502DetailEmissiveUrl from './assets/devices/g502-se-hero-model/material-002-emissive.webp?url'
+import g502DetailMetallicUrl from './assets/devices/g502-se-hero-model/material-002-metallic.webp?url'
+import g502DetailNormalUrl from './assets/devices/g502-se-hero-model/material-002-normal.webp?url'
+import g502DetailRoughnessUrl from './assets/devices/g502-se-hero-model/material-002-roughness.webp?url'
 
 type ViewerState = 'loading' | 'ready' | 'error'
 
-export default function ThreeMouseViewer({active = true, onPrepared}: {active?: boolean;onPrepared?:()=>void}) {
+export default function ThreeMouseViewer({active = true, onPrepared, modelId = 'superstrike'}: {active?: boolean;onPrepared?:()=>void;modelId?:string}) {
   const host = useRef<HTMLDivElement>(null)
   const activeRef = useRef(active)
   const [state, setState] = useState<ViewerState>('loading')
@@ -19,6 +31,8 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
   useEffect(() => {
     const container = host.current
     if (!container) return
+
+    setState('loading')
 
     let frame = 0
     let disposed = false
@@ -38,7 +52,8 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
     renderer.toneMappingExposure = .78
-    renderer.domElement.setAttribute('aria-label', 'Interactive 3D model of the PRO X2 Superstrike')
+    const isG502 = modelId === 'g502-se-hero'
+    renderer.domElement.setAttribute('aria-label', `Interactive 3D model of the ${isG502?'G502 HERO':'PRO X2 Superstrike'}`)
     container.appendChild(renderer.domElement)
 
     const controls = new OrbitControls(camera, renderer.domElement)
@@ -73,16 +88,14 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
       if (!disposed && modelLoaded) { setState('ready'); onPrepared?.() }
     }
     const textureLoader = new THREE.TextureLoader(manager)
-    const atlasTexture = textureLoader.load(atlasTextureUrl)
-    atlasTexture.colorSpace = THREE.SRGBColorSpace
-    atlasTexture.flipY = true
-    atlasTexture.wrapS = THREE.ClampToEdgeWrapping
-    atlasTexture.wrapT = THREE.ClampToEdgeWrapping
-    atlasTexture.anisotropy = renderer.capabilities.getMaxAnisotropy()
-    const loader = new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder)
-    loader.load(modelUrl, gltf => {
-      if (disposed) return
-      const object = gltf.scene
+    const prepareTexture = (url:string,color=false) => {
+      const texture=textureLoader.load(url)
+      if(color)texture.colorSpace=THREE.SRGBColorSpace
+      texture.wrapS=THREE.ClampToEdgeWrapping;texture.wrapT=THREE.ClampToEdgeWrapping
+      texture.anisotropy=renderer.capabilities.getMaxAnisotropy()
+      return texture
+    }
+    const addModel = (object:THREE.Object3D,rotation:number) => {
       const bounds = new THREE.Box3().setFromObject(object)
       const size = bounds.getSize(new THREE.Vector3())
       const center = bounds.getCenter(new THREE.Vector3())
@@ -90,9 +103,47 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
       object.position.copy(center.multiplyScalar(-1))
       const model = new THREE.Group()
       model.scale.setScalar(scale)
-      model.rotation.y = Math.PI * .72
+      model.rotation.y = rotation
       model.add(object)
-      model.traverse(child => {
+      scene.add(model)
+      modelLoaded = true
+    }
+    if (isG502) {
+      const material001 = new THREE.MeshStandardMaterial({
+        map:prepareTexture(g502BodyColorUrl,true),metalnessMap:prepareTexture(g502BodyMetallicUrl),
+        normalMap:prepareTexture(g502BodyNormalUrl),roughnessMap:prepareTexture(g502BodyRoughnessUrl),
+        color:0xffffff,metalness:1,roughness:1,envMap:studioEnvironment,envMapIntensity:.42,
+      })
+      material001.name='G502 material 001'
+      const material002 = new THREE.MeshStandardMaterial({
+        map:prepareTexture(g502DetailColorUrl,true),emissiveMap:prepareTexture(g502DetailEmissiveUrl,true),
+        metalnessMap:prepareTexture(g502DetailMetallicUrl),normalMap:prepareTexture(g502DetailNormalUrl),
+        roughnessMap:prepareTexture(g502DetailRoughnessUrl),color:0xffffff,emissive:0xffffff,
+        emissiveIntensity:1.15,metalness:1,roughness:1,envMap:studioEnvironment,envMapIntensity:.46,
+      })
+      material002.name='G502 material 002'
+      const parts = new THREE.Group(), loader = new OBJLoader(manager)
+      let loadedParts=0
+      const loaded=(object:THREE.Group,material:THREE.MeshStandardMaterial)=>{
+        if(disposed)return
+        object.traverse(child=>{if(child instanceof THREE.Mesh)child.material=material})
+        parts.add(object)
+        if(++loadedParts===2)addModel(parts,Math.PI*.62)
+      }
+      const failed=()=>{if(!disposed){setState('error');onPrepared?.()}}
+      // model_0 is the mesh whose UVs cover Material 002's logo and DPI
+      // emissive pixels. The source folder did not include its MTL files, so
+      // this relationship has to be restored explicitly.
+      loader.load(g502BodyUrl,object=>loaded(object,material002),undefined,failed)
+      loader.load(g502DetailsUrl,object=>loaded(object,material001),undefined,failed)
+    } else {
+      const atlasTexture = prepareTexture(atlasTextureUrl,true)
+      atlasTexture.flipY = true
+      const loader = new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder)
+      loader.load(modelUrl, gltf => {
+        if (disposed) return
+        const object = gltf.scene
+        object.traverse(child => {
         if (!(child instanceof THREE.Mesh)) return
         const materials = Array.isArray(child.material) ? child.material : [child.material]
         for (const material of materials) {
@@ -120,12 +171,12 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
           if ('shininess' in textured) textured.shininess = Math.min(textured.shininess || 24, 30)
           textured.needsUpdate = true
         }
+        })
+        addModel(object,Math.PI*.72)
+      }, undefined, () => {
+        if (!disposed) { setState('error'); onPrepared?.() }
       })
-      scene.add(model)
-      modelLoaded = true
-    }, undefined, () => {
-      if (!disposed) { setState('error'); onPrepared?.() }
-    })
+    }
 
     const resize = () => {
       const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight)
@@ -154,10 +205,11 @@ export default function ThreeMouseViewer({active = true, onPrepared}: {active?: 
       environmentTarget.dispose()
       renderer.dispose(); renderer.domElement.remove()
     }
-  }, [])
+  }, [modelId])
 
   return <div className={`three-mouse-viewer ${state}`} ref={host}>
     <div className="three-stage-copy"><span>INTERACTIVE VIEW</span><strong>Drag to rotate · Scroll to zoom</strong></div>
+    {state === 'loading' && <div className="three-stage-status"><i/><span>Preparing 3D view</span></div>}
     {state === 'error' && <div className="three-stage-status error"><span>3D preview unavailable</span></div>}
   </div>
 }

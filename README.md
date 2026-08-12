@@ -18,7 +18,7 @@ driver for behavior that is not safe to share between mice.
 | Device | USB ID | Connection | Status |
 | --- | --- | --- | --- |
 | Logitech PRO X 2 Superstrike | `046d:c54d` receiver / `046d:40bd` paired endpoint | LIGHTSPEED | Supported and hardware-tested |
-| Logitech G502 HERO / SE | `046d:c08b` | Wired USB | Detected; driver in development |
+| Logitech G502 HERO / SE | `046d:c08b` | Wired USB | Supported from USB captures; hardware verification in progress |
 | Logitech G502 X | To be verified | Wired USB | Catalog entry; support planned |
 
 Connected devices appear first in the device library. openGhub distinguishes
@@ -47,6 +47,15 @@ When onboard-memory mode is enabled, the stored hardware profile controls the
 mouse and openGhub locks its setting editors. Disable onboard mode from the
 Profiles page to return to software control and edit settings.
 
+## G502 HERO / SE features
+
+The G502 driver supports its five onboard profiles, five DPI stages from 100
+through 25600 DPI, default and active DPI selection, 125/250/500/1000 Hz report
+rates, onboard-memory mode, profile naming/enabling/selection, and all eleven
+stored button assignments. Primary/logo RGB effects, DPI indicator lighting,
+and the device-startup lighting effect are also exposed. The implementation uses the G502's profile-format-2
+layout and never applies the Superstrike's extended profile offsets to it.
+
 ## Architecture
 
 openGhub keeps generic protocol handling separate from model-specific formats:
@@ -58,7 +67,7 @@ Linux hidraw transport
     ├── battery, DPI, report rate, and onboard mode
     └── model registry
         ├── PRO X 2 Superstrike driver
-        ├── G502 HERO / SE driver placeholder
+        ├── G502 HERO / SE profile-format-2 driver
         └── unsupported-device fallback
 ```
 

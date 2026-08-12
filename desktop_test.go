@@ -85,6 +85,8 @@ func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 		BhopWindowMS:       intPointer(0),
 		WiredReportRate:    intPointer(8000),
 		WirelessReportRate: intPointer(2000),
+		StartupEffect:      boolPointer(false),
+		DPILighting:        boolPointer(false),
 	}}}
 	if err := writeStoredPreferences(path, want); err != nil {
 		t.Fatal(err)
@@ -106,7 +108,15 @@ func TestStoredPreferencesRoundTripExplicitOffValues(t *testing.T) {
 	if advanced.WirelessReportRate == nil || *advanced.WirelessReportRate != 2000 {
 		t.Fatalf("wireless report rate = %v, want 2000", advanced.WirelessReportRate)
 	}
+	if advanced.StartupEffect == nil || *advanced.StartupEffect {
+		t.Fatalf("startup effect = %v, want explicit off", advanced.StartupEffect)
+	}
+	if advanced.DPILighting == nil || *advanced.DPILighting {
+		t.Fatalf("DPI lighting = %v, want explicit off", advanced.DPILighting)
+	}
 }
+
+func boolPointer(value bool) *bool { return &value }
 
 func TestStoredPreferencesMigratesLegacySuperstrike(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")

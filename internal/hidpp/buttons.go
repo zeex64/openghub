@@ -170,16 +170,38 @@ func (a ButtonAction) encode() [4]byte {
 	}
 }
 
+// encodeClassic preserves the function encoding used by Logitech's classic
+// onboard profile format.  Those profiles terminate FUNCTION assignments with
+// 0xFF (for example DPI Shift is 90 07 FF FF), while Superstrike uses 0x00.
+func (a ButtonAction) encodeClassic() [4]byte {
+	if a.Kind == ButtonFunction {
+		return [4]byte{0x90, byte(a.Code), 0xFF, 0xFF}
+	}
+	return a.encode()
+}
+
 // SetProfileButton writes one button slot (0..15) of a profile, leaving every
 // other byte intact, then re-CRCs, writes, and reloads the resolved RAM sector
 // so the mouse stops using its cached assignment table.
 func (d *Device) SetProfileButton(sector, index int, a ButtonAction) (int, error) {
+	return d.setProfileButtonAt(sector, index, profileButtonsOffset, a.encode())
+}
+
+// SetClassicProfileButton updates a profile-format-2 button table, which
+// begins at byte 32 on the G502 HERO.
+func (d *Device) SetClassicProfileButton(sector, index int, a ButtonAction) (int, error) {
+	return d.setProfileButtonAt(sector, index, 32, a.encodeClassic())
+}
+
+func (d *Device) setProfileButtonAt(sector, index, tableOffset int, enc [4]byte) (int, error) {
 	if index < 0 || index >= 16 {
 		return 0, fmt.Errorf("button index %d out of range", index)
 	}
-	enc := a.encode()
 	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
-		off := profileButtonsOffset + index*4
+		off := tableOffset + index*4
+		if off+4 > len(raw) {
+			return fmt.Errorf("profile sector is too small for button %d", index+1)
+		}
 		copy(raw[off:off+4], enc[:])
 		return nil
 	})

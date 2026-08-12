@@ -8,9 +8,10 @@ export type DeviceState = {
 }
 
 export type DeviceCapabilities = {
-  battery: boolean; dpi: boolean; dpiStages: number; pollingRates: number[]
+  battery: boolean; dpi: boolean; dpiStages: number; dpiMin: number; dpiMax: number; dpiStep: number; dpiLiftOff: boolean
+  pollingRates: number[]; separatePollingRates: boolean
   profiles: boolean; onboardMode: boolean; buttonMapping: boolean
-  haptics: boolean; gamingSurface: boolean; bhop: boolean
+  haptics: boolean; gamingSurface: boolean; bhop: boolean; lighting:boolean; startupEffect:boolean; dpiLighting:boolean
 }
 
 export type DeviceSummary = {
@@ -23,9 +24,11 @@ export type DeviceSummary = {
 export type Profile = {
   index: number; sector: number; enabled: boolean; active: boolean; name: string
   dpiX: number; dpiY: number; pollingRate: number
-  dpiStages: DPIStage[]; defaultDpiStage: number; currentDpiStage: number; hasDpiStages: boolean
+  dpiStages: DPIStage[]; defaultDpiStage: number; shiftDpiStage: number; currentDpiStage: number; hasDpiStages: boolean
   buttonMappings: Array<{index: number; name: string; assignment: string}>
+  lighting: LightingEffect[]
 }
+export type LightingEffect = {mode:number;red:number;green:number;blue:number;periodMs:number;brightness:number}
 export type DPIStage = { index: number; x: number; y: number; lod: number; enabled: boolean }
 
 export type ButtonAction = { Kind: number; Code: number; Mods: number; Raw: number[] }
@@ -33,7 +36,7 @@ export type ButtonPayload = { profileName: string; sector: number; buttons: Arra
 export type Choice = { name: string; code: number }
 export type Choices = { mouse: Choice[]; keys: Choice[]; media: Choice[]; functions: Choice[] }
 export type Haptics = { maxActuation: number; maxRapidTrigger: number; maxHaptics: number; buttons: Array<{index: number; name: string; actuation: number; rapidTrigger: number; rapidTriggerEnabled: boolean; haptics: number}> }
-export type AdvancedSettings = { gamingSurfaceAvailable: boolean; gamingSurfaceMode: number; bhopAvailable: boolean; bhopKnown: boolean; bhopWindowMs: number }
+export type AdvancedSettings = { gamingSurfaceAvailable: boolean; gamingSurfaceMode: number; bhopAvailable: boolean; bhopKnown: boolean; bhopWindowMs: number; startupEffectAvailable:boolean;startupEffectEnabled:boolean;dpiLightingAvailable:boolean;dpiLightingEnabled:boolean }
 
 declare global {
   interface Window {
@@ -42,7 +45,7 @@ declare global {
   }
 }
 
-const emptyCapabilities: DeviceCapabilities = {battery:false,dpi:false,dpiStages:0,pollingRates:[],profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false}
+const emptyCapabilities: DeviceCapabilities = {battery:false,dpi:false,dpiStages:0,dpiMin:100,dpiMax:44000,dpiStep:50,dpiLiftOff:false,pollingRates:[],separatePollingRates:false,profiles:false,onboardMode:false,buttonMapping:false,haptics:false,gamingSurface:false,bhop:false,lighting:false,startupEffect:false,dpiLighting:false}
 const demoState: DeviceState = { connected: false, permissionDenied: false, name: '', path: '', battery: 0, charging: false, hasBattery: false, profile: '', dpiX: 0, dpiY: 0, pollingRate: 0, configuredPollingRate: 0, connectionType:'wired', wiredPollingRate:0, wirelessPollingRate:0, onboardModeAvailable: false, onboardModeEnabled: false, deviceId:'', modelId:'', capabilities:emptyCapabilities }
 
 async function invoke<T>(method: string, ...args: unknown[]): Promise<T> {
@@ -61,8 +64,8 @@ export const api = {
   profiles: () => invoke<Profile[]>('GetProfiles'),
   updateDPI: (sector: number, x: number, y: number) => invoke<void>('UpdateDPI', sector, x, y),
   updateDPIStage: (sector: number, stage: number, x: number, y: number, lod: number, enabled: boolean, makeDefault: boolean) => invoke<number>('UpdateDPIStage', sector, stage, x, y, lod, enabled, makeDefault),
-  saveDPIToProfile: (sector: number, stages: DPIStage[], defaultStage: number, currentStage: number) => invoke<number>('SaveDPIToProfile', sector, stages, defaultStage, currentStage),
-  selectDPI: (sector: number, dpi: number, lod: number) => invoke<void>('SelectDPI', sector, dpi, lod),
+  saveDPIToProfile: (sector: number, stages: DPIStage[], defaultStage: number, currentStage: number, shiftStage: number) => invoke<number>('SaveDPIToProfile', sector, stages, defaultStage, currentStage, shiftStage),
+  selectDPI: (sector: number, stage: number, dpi: number, lod: number) => invoke<void>('SelectDPI', sector, stage, dpi, lod),
   updateRate: (sector: number, rate: number) => invoke<number>('UpdatePollingRate', sector, rate),
   updateTransportRate: (transport: 'wired'|'wireless', rate: number) => invoke<void>('UpdateTransportPollingRate', transport, rate),
   activate: (sector: number) => invoke<void>('ActivateProfile', sector),
@@ -77,6 +80,9 @@ export const api = {
   setGamingSurface: (mode: number) => invoke<void>('SetGamingSurfaceMode', mode),
   setBhop: (windowMs: number) => invoke<void>('SetBhopWindow', windowMs),
   setOnboardMode: (enabled: boolean) => invoke<void>('SetOnboardMode', enabled),
+  setLighting: (sector:number,zone:number,effect:LightingEffect) => invoke<number>('SetLighting',sector,zone,effect.mode,effect.red,effect.green,effect.blue,effect.periodMs,effect.brightness),
+  setStartupEffect: (enabled:boolean) => invoke<void>('SetStartupEffect',enabled),
+  setDPILighting: (enabled:boolean) => invoke<void>('SetDPILighting',enabled),
 }
 
 export function onDeviceUpdate(callback: (state: DeviceState) => void) {

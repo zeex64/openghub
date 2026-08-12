@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -39,6 +40,7 @@ type DesktopController struct {
 	perm              bool
 	preferences       storedPreferences
 	preferencesLoaded bool
+	lastDiscovery     time.Time
 }
 
 type DeviceSession struct {
@@ -52,15 +54,26 @@ type DeviceSession struct {
 	// activeProfileSector remembers the onboard profile that owns the current
 	// configuration while the mouse is temporarily in host mode for live DPI.
 	// In host mode the firmware reports CurrentProfileSector as 0x0000.
-	activeProfileSector int
-	bhopWindow          int
-	bhopKnown           bool
-	bhopPreferred       bool
-	surfaceMode         int
-	surfaceKnown        bool
-	surfacePreferred    bool
-	wiredReportRate     int
-	wirelessReportRate  int
+	activeProfileSector  int
+	bhopWindow           int
+	bhopKnown            bool
+	bhopPreferred        bool
+	surfaceMode          int
+	surfaceKnown         bool
+	surfacePreferred     bool
+	wiredReportRate      int
+	wirelessReportRate   int
+	startupEffect        bool
+	startupEffectKnown   bool
+	startupPreferred     bool
+	dpiLighting          bool
+	dpiLightingKnown     bool
+	dpiLightingPreferred bool
+	lastSeenAt           time.Time
+	lastState            DeviceState
+	lastStateAt          time.Time
+	activeDPIStage       int
+	activeDPIStageKnown  bool
 }
 
 type DeviceState struct {
@@ -102,19 +115,21 @@ type DeviceSummaryDTO struct {
 }
 
 type ProfileDTO struct {
-	Index           int                `json:"index"`
-	Sector          int                `json:"sector"`
-	Enabled         bool               `json:"enabled"`
-	Active          bool               `json:"active"`
-	Name            string             `json:"name"`
-	DPIX            int                `json:"dpiX"`
-	DPIY            int                `json:"dpiY"`
-	Rate            int                `json:"pollingRate"`
-	DPIStages       []DPIStageDTO      `json:"dpiStages"`
-	DefaultDPIStage int                `json:"defaultDpiStage"`
-	CurrentDPIStage int                `json:"currentDpiStage"`
-	HasDPIStages    bool               `json:"hasDpiStages"`
-	ButtonMappings  []ProfileButtonDTO `json:"buttonMappings"`
+	Index           int                    `json:"index"`
+	Sector          int                    `json:"sector"`
+	Enabled         bool                   `json:"enabled"`
+	Active          bool                   `json:"active"`
+	Name            string                 `json:"name"`
+	DPIX            int                    `json:"dpiX"`
+	DPIY            int                    `json:"dpiY"`
+	Rate            int                    `json:"pollingRate"`
+	DPIStages       []DPIStageDTO          `json:"dpiStages"`
+	DefaultDPIStage int                    `json:"defaultDpiStage"`
+	ShiftDPIStage   int                    `json:"shiftDpiStage"`
+	CurrentDPIStage int                    `json:"currentDpiStage"`
+	HasDPIStages    bool                   `json:"hasDpiStages"`
+	ButtonMappings  []ProfileButtonDTO     `json:"buttonMappings"`
+	Lighting        []hidpp.LightingEffect `json:"lighting"`
 }
 
 type ProfileButtonDTO struct {
@@ -178,13 +193,19 @@ type AdvancedSettingsPayload struct {
 	BhopAvailable          bool `json:"bhopAvailable"`
 	BhopKnown              bool `json:"bhopKnown"`
 	BhopWindowMS           int  `json:"bhopWindowMs"`
+	StartupEffectAvailable bool `json:"startupEffectAvailable"`
+	StartupEffectEnabled   bool `json:"startupEffectEnabled"`
+	DPILightingAvailable   bool `json:"dpiLightingAvailable"`
+	DPILightingEnabled     bool `json:"dpiLightingEnabled"`
 }
 
 type advancedPreferences struct {
-	GamingSurfaceMode  *int `json:"gamingSurfaceMode,omitempty"`
-	BhopWindowMS       *int `json:"bhopWindowMs,omitempty"`
-	WiredReportRate    *int `json:"wiredReportRate,omitempty"`
-	WirelessReportRate *int `json:"wirelessReportRate,omitempty"`
+	GamingSurfaceMode  *int  `json:"gamingSurfaceMode,omitempty"`
+	BhopWindowMS       *int  `json:"bhopWindowMs,omitempty"`
+	WiredReportRate    *int  `json:"wiredReportRate,omitempty"`
+	WirelessReportRate *int  `json:"wirelessReportRate,omitempty"`
+	StartupEffect      *bool `json:"startupEffect,omitempty"`
+	DPILighting        *bool `json:"dpiLighting,omitempty"`
 }
 
 type storedPreferences struct {
@@ -193,7 +214,7 @@ type storedPreferences struct {
 	LegacySuperstrike *advancedPreferences           `json:"superstrike,omitempty"`
 }
 
-const storedPreferencesVersion = 3
+const storedPreferencesVersion = 4
 
 func preferencesPath() (string, error) {
 	dir, err := os.UserConfigDir()
@@ -379,6 +400,12 @@ func (c *DesktopController) applyStoredPreferencesLocked(session *DeviceSession)
 			if value.WirelessReportRate != nil {
 				advanced.WirelessReportRate = value.WirelessReportRate
 			}
+			if value.StartupEffect != nil {
+				advanced.StartupEffect = value.StartupEffect
+			}
+			if value.DPILighting != nil {
+				advanced.DPILighting = value.DPILighting
+			}
 		}
 	}
 	if advanced.GamingSurfaceMode != nil && validStoredSurfaceMode(*advanced.GamingSurfaceMode) {
@@ -396,6 +423,12 @@ func (c *DesktopController) applyStoredPreferencesLocked(session *DeviceSession)
 	}
 	if advanced.WirelessReportRate != nil && validStoredReportRate(*advanced.WirelessReportRate) {
 		session.wirelessReportRate = *advanced.WirelessReportRate
+	}
+	if advanced.StartupEffect != nil {
+		session.startupEffect, session.startupEffectKnown, session.startupPreferred = *advanced.StartupEffect, true, true
+	}
+	if advanced.DPILighting != nil {
+		session.dpiLighting, session.dpiLightingKnown, session.dpiLightingPreferred = *advanced.DPILighting, true, true
 	}
 }
 
@@ -424,6 +457,14 @@ func (c *DesktopController) savePreferencesLocked() error {
 	if validStoredReportRate(session.wirelessReportRate) {
 		rate := session.wirelessReportRate
 		advanced.WirelessReportRate = &rate
+	}
+	if session.startupPreferred {
+		enabled := session.startupEffect
+		advanced.StartupEffect = &enabled
+	}
+	if session.dpiLightingPreferred {
+		enabled := session.dpiLighting
+		advanced.DPILighting = &enabled
 	}
 	if c.preferences.Devices == nil {
 		c.preferences.Devices = make(map[string]advancedPreferences)
@@ -478,6 +519,7 @@ func (c *DesktopController) initializeSessionLocked(device *hidpp.Device) *Devic
 		Features:     features,
 		Capabilities: driver.Capabilities(features),
 		Name:         driver.DisplayName(),
+		lastSeenAt:   time.Now(),
 	}
 	if driver.ID() == "unknown-logitech" {
 		session.Name = normalizeDeviceName(matchIdentity.Name)
@@ -518,6 +560,12 @@ func (c *DesktopController) initializeSessionLocked(device *hidpp.Device) *Devic
 	if modeErr == nil && mode == hidpp.OnboardModeHost {
 		c.applyHostPreferencesToSessionLocked(session)
 	}
+	if session.startupPreferred && session.Capabilities.StartupEffect {
+		_ = device.SetStartupLighting(session.startupEffect)
+	}
+	if session.dpiLightingPreferred && session.Capabilities.DPILighting {
+		_ = device.SetDPILighting(session.dpiLighting)
+	}
 	return session
 }
 
@@ -526,7 +574,15 @@ func (c *DesktopController) syncDevicesLocked() {
 	if c.sessions == nil {
 		c.sessions = make(map[string]*DeviceSession)
 	}
+	// Device discovery probes several HID++ addresses on every Logitech hidraw
+	// endpoint. The refresh loop and the frontend can ask for state at nearly
+	// the same time, so coalesce those requests instead of repeating the entire
+	// scan several times during startup.
+	if !c.lastDiscovery.IsZero() && time.Since(c.lastDiscovery) < 2*time.Second {
+		return
+	}
 	discovered, perm, _ := hidpp.Discover()
+	c.lastDiscovery = time.Now()
 	c.perm = perm
 	seen := make(map[string]bool, len(discovered))
 	for _, device := range discovered {
@@ -534,6 +590,7 @@ func (c *DesktopController) syncDevicesLocked() {
 		seen[identity.ID] = true
 		if existing := c.sessions[identity.ID]; existing != nil {
 			if _, err := existing.Device.Ping(); err == nil && endpointPriority(existing.Identity) >= endpointPriority(identity) {
+				existing.lastSeenAt = time.Now()
 				device.Close()
 				continue
 			}
@@ -609,8 +666,11 @@ func (c *DesktopController) GetDevices() []DeviceSummaryDTO {
 func (c *DesktopController) SelectDevice(id string) (DeviceState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
-	c.syncDevicesLocked()
 	session := c.sessions[id]
+	if session == nil {
+		c.syncDevicesLocked()
+		session = c.sessions[id]
+	}
 	if session == nil {
 		return DeviceState{}, fmt.Errorf("mouse is no longer connected")
 	}
@@ -618,7 +678,15 @@ func (c *DesktopController) SelectDevice(id string) (DeviceState, error) {
 		return DeviceState{}, fmt.Errorf("%s support is still in development", session.Name)
 	}
 	c.selectedID = id
-	return c.deviceStateLocked(session), nil
+	// The library card was built from this live session. Reuse its most recent
+	// state so opening it is immediate; the regular refresh updates any values
+	// that changed since that snapshot.
+	if session.lastState.Connected {
+		return session.lastState, nil
+	}
+	state := c.deviceStateLocked(session)
+	session.lastState, session.lastStateAt = state, time.Now()
+	return state, nil
 }
 
 func normalizeDeviceName(name string) string {
@@ -631,7 +699,11 @@ func normalizeDeviceName(name string) string {
 
 func (c *DesktopController) ensureDeviceLocked() error {
 	if session := c.selectedSessionLocked(); session != nil {
+		if time.Since(session.lastSeenAt) < 2*time.Second {
+			return nil
+		}
 		if _, err := session.Device.Ping(); err == nil {
+			session.lastSeenAt = time.Now()
 			return nil
 		}
 		session.Device.Close()
@@ -654,7 +726,13 @@ func (c *DesktopController) GetDeviceState() DeviceState {
 	if err := c.ensureDeviceLocked(); err != nil {
 		return DeviceState{Permission: c.perm}
 	}
-	return c.deviceStateLocked(c.selectedSessionLocked())
+	session := c.selectedSessionLocked()
+	if session.lastState.Connected && time.Since(session.lastStateAt) < 750*time.Millisecond {
+		return session.lastState
+	}
+	state := c.deviceStateLocked(session)
+	session.lastState, session.lastStateAt = state, time.Now()
+	return state
 }
 
 func (c *DesktopController) deviceStateLocked(session *DeviceSession) DeviceState {
@@ -745,12 +823,22 @@ func (c *DesktopController) GetProfiles() ([]ProfileDTO, error) {
 					break
 				}
 			}
+			if currentStage >= 0 {
+				session.activeDPIStage, session.activeDPIStageKnown = currentStage, true
+			}
 		}
 		mappings := make([]ProfileButtonDTO, 0, buttonCount)
 		for i := 0; i < buttonCount; i++ {
-			mappings = append(mappings, ProfileButtonDTO{Index: i, Name: physicalButtonLabel(i), Assignment: p.Buttons[i].Describe()})
+			mappings = append(mappings, ProfileButtonDTO{Index: i, Name: physicalButtonLabelFor(session.Driver.ID(), i), Assignment: p.Buttons[i].Describe()})
 		}
-		out = append(out, ProfileDTO{Index: p.Index, Sector: p.Sector, Enabled: p.Enabled, Active: p.Sector == active, Name: p.Name, DPIX: p.DPIX, DPIY: p.DPIY, Rate: p.ReportRateHz, DPIStages: stages, DefaultDPIStage: p.ResIndex, CurrentDPIStage: currentStage, HasDPIStages: p.HasDPIStages, ButtonMappings: mappings})
+		shiftStage := p.ShiftIndex
+		if shiftStage < 0 || shiftStage >= len(p.DPIStages) || !p.DPIStages[shiftStage].Enabled {
+			shiftStage = p.ResIndex
+		}
+		// Profile-format-2 stores logo before primary. Present the two normal
+		// effects in the same logical order as the live feature and UI.
+		lighting := []hidpp.LightingEffect{p.Lighting[1], p.Lighting[0]}
+		out = append(out, ProfileDTO{Index: p.Index, Sector: p.Sector, Enabled: p.Enabled, Active: p.Sector == active, Name: p.Name, DPIX: p.DPIX, DPIY: p.DPIY, Rate: p.ReportRateHz, DPIStages: stages, DefaultDPIStage: p.ResIndex, ShiftDPIStage: shiftStage, CurrentDPIStage: currentStage, HasDPIStages: p.HasDPIStages, ButtonMappings: mappings, Lighting: lighting})
 	}
 	return out, nil
 }
@@ -777,16 +865,13 @@ func (c *DesktopController) UpdateDPIStage(sector, stage, x, y, lod int, enabled
 	return actual, nil
 }
 
-func (c *DesktopController) SaveDPIToProfile(sector int, stages []DPIStageDTO, defaultStage, currentStage int) (int, error) {
+func (c *DesktopController) SaveDPIToProfile(sector int, stages []DPIStageDTO, defaultStage, currentStage, shiftStage int) (int, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	if err := c.ensureDeviceLocked(); err != nil {
 		return 0, err
 	}
 	session := c.selectedSessionLocked()
-	if session.Driver.ID() != "superstrike" {
-		return 0, fmt.Errorf("DPI profile saving is only available for the Superstrike")
-	}
 	if err := c.requireHostModeLocked(session); err != nil {
 		return 0, err
 	}
@@ -799,27 +884,52 @@ func (c *DesktopController) SaveDPIToProfile(sector int, stages []DPIStageDTO, d
 	for i, stage := range stages {
 		converted[i] = hidpp.DPIStage{Index: i, X: stage.X, Y: stage.Y, LOD: byte(stage.LOD), Enabled: stage.Enabled}
 	}
-	actual, err := session.Driver.SaveDPISettings(session.Device, sector, converted, defaultStage, currentStage)
+	actual, err := session.Driver.SaveDPISettings(session.Device, sector, converted, defaultStage, currentStage, shiftStage)
 	if err != nil {
 		return 0, err
 	}
 	session.activeProfileSector = actual
+	if session.Driver.ID() == "g502-se-hero" {
+		if err := session.Device.SetDPIIndicator(currentStage); err != nil {
+			return 0, fmt.Errorf("DPI saved, but its indicator could not be restored: %w", err)
+		}
+		session.activeDPIStage, session.activeDPIStageKnown = currentStage, true
+	}
 	return actual, nil
 }
 
-func (c *DesktopController) SelectDPI(sector, dpi, lod int) error {
-	if dpi < 100 || dpi > hidpp.MaxDPI {
-		return fmt.Errorf("DPI must be between 100 and %d", hidpp.MaxDPI)
-	}
+func (c *DesktopController) SelectDPI(sector, stage, dpi, lod int) error {
 	if sector <= 0 {
 		return fmt.Errorf("invalid active profile sector 0x%04X", sector)
 	}
+	if stage < 0 || stage > 4 {
+		return fmt.Errorf("DPI stage %d is out of range", stage+1)
+	}
 	return c.withSession(func(session *DeviceSession) error {
-		if session.Driver.ID() != "superstrike" {
-			return fmt.Errorf("lift-off distance is only available for the Superstrike")
+		minDPI, maxDPI := session.Capabilities.DPIMin, session.Capabilities.DPIMax
+		if minDPI == 0 {
+			minDPI = 100
 		}
-		if err := session.Device.SelectLiveDPIWithLOD(dpi, byte(lod)); err != nil {
+		if maxDPI == 0 {
+			maxDPI = hidpp.MaxDPI
+		}
+		if dpi < minDPI || dpi > maxDPI {
+			return fmt.Errorf("DPI must be between %d and %d", minDPI, maxDPI)
+		}
+		var err error
+		if session.Capabilities.DPILiftOff {
+			err = session.Device.SelectLiveDPIWithLOD(dpi, byte(lod))
+		} else {
+			err = session.Device.SelectLiveDPI(dpi)
+		}
+		if err != nil {
 			return err
+		}
+		if session.Driver.ID() == "g502-se-hero" {
+			if err := session.Device.SetDPIIndicator(stage); err != nil {
+				return fmt.Errorf("DPI changed, but its indicator could not be updated: %w", err)
+			}
+			session.activeDPIStage, session.activeDPIStageKnown = stage, true
 		}
 		session.activeProfileSector = sector
 		return nil
@@ -970,7 +1080,7 @@ func (c *DesktopController) GetButtons() (ButtonsPayload, error) {
 	}
 	out := ButtonsPayload{ProfileName: name, Sector: p.Sector}
 	for i := 0; i < count; i++ {
-		out.Buttons = append(out.Buttons, ButtonDTO{i, physicalButtonLabel(i), p.Buttons[i].Describe(), p.Buttons[i]})
+		out.Buttons = append(out.Buttons, ButtonDTO{i, physicalButtonLabelFor(session.Driver.ID(), i), p.Buttons[i].Describe(), p.Buttons[i]})
 	}
 	return out, nil
 }
@@ -1154,7 +1264,92 @@ func (c *DesktopController) GetAdvancedSettings() (AdvancedSettingsPayload, erro
 		}
 		out.BhopWindowMS, out.BhopKnown = session.bhopWindow, session.bhopKnown
 	}
+	if session.Capabilities.StartupEffect {
+		out.StartupEffectAvailable = true
+		enabled, err := device.StartupLighting()
+		if err != nil {
+			return AdvancedSettingsPayload{}, fmt.Errorf("read startup effect: %w", err)
+		}
+		session.startupEffect, session.startupEffectKnown = enabled, true
+		out.StartupEffectEnabled = enabled
+	}
+	if session.Capabilities.DPILighting {
+		out.DPILightingAvailable = true
+		enabled, err := device.DPILighting()
+		if err != nil {
+			return AdvancedSettingsPayload{}, fmt.Errorf("read DPI lighting: %w", err)
+		}
+		session.dpiLighting, session.dpiLightingKnown = enabled, true
+		out.DPILightingEnabled = enabled
+	}
 	return out, nil
+}
+
+func (c *DesktopController) SetLighting(sector, zone, mode, red, green, blue, periodMS, brightness int) (int, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := c.ensureDeviceLocked(); err != nil {
+		return 0, err
+	}
+	session := c.selectedSessionLocked()
+	if !session.Capabilities.Lighting || session.Driver.ID() != "g502-se-hero" {
+		return 0, fmt.Errorf("lighting is unavailable for this mouse")
+	}
+	if err := c.requireHostModeLocked(session); err != nil {
+		return 0, err
+	}
+	defer c.restoreHostModeLocked(session)
+	effect := hidpp.LightingEffect{Mode: byte(mode), Red: byte(red), Green: byte(green), Blue: byte(blue), PeriodMS: periodMS, Brightness: brightness}
+	actual, err := session.Device.SetClassicProfileLighting(sector, zone, effect)
+	if err == nil {
+		session.activeProfileSector = actual
+		if session.activeDPIStageKnown {
+			if indicatorErr := session.Device.SetDPIIndicator(session.activeDPIStage); indicatorErr != nil {
+				return actual, fmt.Errorf("lighting saved, but the DPI indicator could not be restored: %w", indicatorErr)
+			}
+		}
+	}
+	return actual, err
+}
+
+func (c *DesktopController) SetStartupEffect(enabled bool) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := c.ensureDeviceLocked(); err != nil {
+		return err
+	}
+	session := c.selectedSessionLocked()
+	if !session.Capabilities.StartupEffect {
+		return fmt.Errorf("startup effect is unavailable")
+	}
+	if err := session.Device.SetStartupLighting(enabled); err != nil {
+		return err
+	}
+	session.startupEffect, session.startupEffectKnown, session.startupPreferred = enabled, true, true
+	if err := c.savePreferencesLocked(); err != nil {
+		return fmt.Errorf("startup effect applied, but preference could not be saved: %w", err)
+	}
+	return nil
+}
+
+func (c *DesktopController) SetDPILighting(enabled bool) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := c.ensureDeviceLocked(); err != nil {
+		return err
+	}
+	session := c.selectedSessionLocked()
+	if !session.Capabilities.DPILighting {
+		return fmt.Errorf("DPI lighting is unavailable")
+	}
+	if err := session.Device.SetDPILighting(enabled); err != nil {
+		return err
+	}
+	session.dpiLighting, session.dpiLightingKnown, session.dpiLightingPreferred = enabled, true, true
+	if err := c.savePreferencesLocked(); err != nil {
+		return fmt.Errorf("DPI lighting applied, but preference could not be saved: %w", err)
+	}
+	return nil
 }
 
 func (c *DesktopController) SetGamingSurfaceMode(mode int) error {
@@ -1223,14 +1418,16 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 	session := c.selectedSessionLocked()
 	profileSector := 0
 	profileDefaultStage := -1
-	if enabled && session.Driver.ID() == "superstrike" {
+	if enabled {
 		profile, err := c.activeProfileLocked(session)
 		if err != nil {
 			return fmt.Errorf("could not identify the active profile before enabling onboard mode: %w", err)
 		}
 		profileSector = profile.Sector
-		if stage, ok := storedDefaultDPIStage(profile); ok {
-			profileDefaultStage = stage
+		if session.Driver.ID() == "superstrike" {
+			if stage, ok := storedDefaultDPIStage(profile); ok {
+				profileDefaultStage = stage
+			}
 		}
 	}
 	target := byte(hidpp.OnboardModeHost)
@@ -1249,6 +1446,16 @@ func (c *DesktopController) SetOnboardMode(enabled bool) error {
 		return fmt.Errorf("onboard mode did not apply: got 0x%02X, want 0x%02X", mode, target)
 	}
 	if enabled && profileSector != 0 {
+		if session.Driver.ID() == "g502-se-hero" {
+			// Selecting the already-current sector is a no-op on the G502. Force a
+			// bounce so newly written default/shift DPI bytes and assignments are
+			// loaded from profile memory instead of using the firmware's stale copy.
+			if err := session.Device.ReloadProfile(profileSector); err != nil {
+				return fmt.Errorf("onboard mode enabled, but the G502 profile could not be reloaded: %w", err)
+			}
+			session.activeProfileSector = profileSector
+			return nil
+		}
 		// Merely changing owners makes some Superstrike firmware restore its
 		// stale runtime DPI stage. Reload the profile, then explicitly reset the
 		// separate runtime index to byte 1's stored default.
@@ -1325,8 +1532,11 @@ func toChoices(in []hidpp.NamedCode) []ChoiceDTO {
 	return out
 }
 
-func physicalButtonLabel(i int) string {
+func physicalButtonLabelFor(model string, i int) string {
 	names := []string{"Left Click", "Right Click", "Middle / Wheel", "Back", "Forward"}
+	if model == "g502-se-hero" {
+		names = []string{"Left Click", "Right Click", "Middle / Wheel", "Back", "Forward", "DPI Shift", "DPI Down", "DPI Up", "Wheel Left", "Wheel Right", "Profile Cycle"}
+	}
 	if i < len(names) {
 		return names[i]
 	}
@@ -1335,9 +1545,9 @@ func physicalButtonLabel(i int) string {
 
 func (c *DesktopController) rateLoop() {
 	var f *os.File
-	var path string
+	var controlPath, eventPath string
 	var stamps []time.Time
-	buf := make([]byte, 64)
+	buf := make([]byte, 24*64)
 	defer func() {
 		if f != nil {
 			f.Close()
@@ -1355,14 +1565,14 @@ func (c *DesktopController) rateLoop() {
 			cur = session.Device.Path
 		}
 		c.opMu.Unlock()
-		if cur != path {
+		if cur != controlPath {
 			if f != nil {
 				f.Close()
 				f = nil
 			}
-			path, stamps = cur, stamps[:0]
-			if path != "" {
-				f, _ = os.OpenFile(path, os.O_RDONLY, 0)
+			controlPath, eventPath, stamps = cur, inputEventPath(cur), stamps[:0]
+			if eventPath != "" {
+				f, _ = os.OpenFile(eventPath, os.O_RDONLY, 0)
 			}
 		}
 		if f == nil {
@@ -1384,8 +1594,18 @@ func (c *DesktopController) rateLoop() {
 				f = nil
 				continue
 			}
-			if nr > 0 && buf[0] != hidpp.ReportShort && buf[0] != hidpp.ReportLong && buf[0] != hidpp.ReportVeryLong {
-				stamps = append(stamps, now)
+			// Never monitor report rate through the HID++ control node: a second
+			// reader there can steal replies from DPI/profile requests. Linux input
+			// events are 24 bytes on the supported 64-bit builds; one SYN_REPORT
+			// marks one completed mouse report.
+			for off := 0; off+24 <= nr; off += 24 {
+				typeCode := binary.LittleEndian.Uint16(buf[off+16 : off+18])
+				code := binary.LittleEndian.Uint16(buf[off+18 : off+20])
+				if typeCode == 0 && code == 0 {
+					sec := int64(binary.LittleEndian.Uint64(buf[off : off+8]))
+					usec := int64(binary.LittleEndian.Uint64(buf[off+8 : off+16]))
+					stamps = append(stamps, time.Unix(sec, usec*1000))
+				}
 			}
 		}
 		cutoff := now.Add(-time.Second)
@@ -1403,13 +1623,26 @@ func (c *DesktopController) rateLoop() {
 			if med := diffs[len(diffs)/2]; med > 0 {
 				measured := nearestSupportedRate(1 / med)
 				c.opMu.Lock()
-				if session := c.selectedSessionLocked(); session != nil && session.Device.Path == path {
+				if session := c.selectedSessionLocked(); session != nil && session.Device.Path == controlPath {
 					session.Rate = measured
 				}
 				c.opMu.Unlock()
 			}
 		}
 	}
+}
+
+func inputEventPath(hidrawPath string) string {
+	if hidrawPath == "" {
+		return ""
+	}
+	base := filepath.Base(hidrawPath)
+	matches, _ := filepath.Glob(filepath.Join("/sys/class/hidraw", base, "device/input/input*/event*"))
+	if len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return filepath.Join("/dev/input", filepath.Base(matches[0]))
 }
 
 func nearestSupportedRate(hz float64) int {

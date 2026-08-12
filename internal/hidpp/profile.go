@@ -76,6 +76,7 @@ type ProfileInfo struct {
 	SectorSize int
 	Count      int
 	Buttons    int
+	Format     int
 }
 
 // Profile is the decoded, editable view of one profile sector.
@@ -91,12 +92,14 @@ type Profile struct {
 	ReportRate   byte   // raw byte 0 (power-of-two rate code)
 	ReportRateHz int    // decoded polling rate in Hz
 	ResIndex     int    // raw[1]: resolution index
+	ShiftIndex   int    // format 2 raw[2]: DPI-shift resolution index
 	DPIX         int    // active resolution X DPI
 	DPIY         int    // active resolution Y DPI
 	DPI          [5]int // raw resolution words (diagnostic)
 	DPIStages    [5]DPIStage
 	HasDPIStages bool
-	Buttons      [16]ButtonAction // decoded button slots (bytes 32..95)
+	Buttons      [16]ButtonAction  // decoded button slots (bytes 32..95)
+	Lighting     [4]LightingEffect // logo/primary normal, then logo/primary power-saving
 }
 
 // DPIStage is one of the five resolutions the mouse can cycle through.
@@ -141,6 +144,13 @@ func rateByteForHz(hz int) (byte, bool) {
 // decodeProfile parses a sector into a Profile (without Index/Enabled, which
 // come from the control sector).
 func decodeProfile(sector int, raw []byte) Profile {
+	return decodeProfileFormat(sector, raw, 0, 16)
+}
+
+func decodeProfileFormat(sector int, raw []byte, format, buttonCount int) Profile {
+	if format == 2 {
+		return decodeClassicProfile(sector, raw, buttonCount)
+	}
 	p := Profile{Sector: sector, Raw: raw, ReportRate: raw[0], ReportRateHz: hzForRateByte(raw[0]), ResIndex: int(raw[1])}
 	if profileUsesFiveByteDPI(raw) {
 		p.HasDPIStages = true
@@ -176,6 +186,64 @@ func decodeProfile(sector int, raw []byte) Profile {
 		}
 	}
 	p.Name = decodeProfileName(raw)
+	for i := 0; i < 4; i++ {
+		off := 208 + i*11
+		if off+11 <= len(raw)-2 {
+			p.Lighting[i] = DecodeLightingEffect(raw[off : off+11])
+		}
+	}
+	return p
+}
+
+// Profile format 2 is used by classic Logitech gaming mice such as the G502
+// HERO. Its five DPI values are uint16 little-endian words at bytes 3..12;
+// byte 1 selects the default value and byte 2 selects the DPI-shift value.
+func decodeClassicProfile(sector int, raw []byte, buttonCount int) Profile {
+	p := Profile{Sector: sector, Raw: raw}
+	if len(raw) < 32 {
+		return p
+	}
+	p.ReportRate = raw[0]
+	if raw[0] == 1 || raw[0] == 2 || raw[0] == 4 || raw[0] == 8 {
+		p.ReportRateHz = 1000 / int(raw[0])
+	}
+	p.ResIndex = int(raw[1])
+	p.ShiftIndex = int(raw[2])
+	p.HasDPIStages = true
+	for i := 0; i < 5; i++ {
+		off := 3 + i*2
+		dpi := int(raw[off]) | int(raw[off+1])<<8
+		enabled := validProfileDPI(dpi)
+		p.DPI[i] = dpi
+		p.DPIStages[i] = DPIStage{Index: i, X: dpi, Y: dpi, Enabled: enabled}
+		if i == p.ResIndex && enabled {
+			p.DPIX, p.DPIY = dpi, dpi
+		}
+	}
+	if p.DPIX == 0 {
+		for _, stage := range p.DPIStages {
+			if stage.Enabled {
+				p.DPIX, p.DPIY = stage.X, stage.Y
+				break
+			}
+		}
+	}
+	if buttonCount < 0 || buttonCount > 16 {
+		buttonCount = 16
+	}
+	for i := 0; i < buttonCount; i++ {
+		off := 32 + i*4
+		if off+4 <= len(raw) {
+			p.Buttons[i] = decodeButton(raw[off : off+4])
+		}
+	}
+	p.Name = decodeProfileName(raw)
+	for i := 0; i < 4; i++ {
+		off := 208 + i*11
+		if off+11 <= len(raw)-2 {
+			p.Lighting[i] = DecodeLightingEffect(raw[off : off+11])
+		}
+	}
 	return p
 }
 
@@ -308,6 +376,7 @@ func (d *Device) ProfileInfo() (ProfileInfo, error) {
 		SectorSize: int(p[7])<<8 | int(p[8]),
 		Count:      int(p[3]),
 		Buttons:    int(p[5]),
+		Format:     int(p[1]),
 	}, nil
 }
 
@@ -514,7 +583,7 @@ func (d *Device) Profiles() ([]Profile, error) {
 		if rerr != nil {
 			continue // skip a transiently-bad slot rather than show garbage
 		}
-		p := decodeProfile(h.Sector, raw)
+		p := decodeProfileFormat(h.Sector, raw, info.Format, info.Buttons)
 		p.Index = i + 1
 		p.Enabled = h.Enabled
 		out = append(out, p)
@@ -551,7 +620,7 @@ func (d *Device) ActiveProfile() (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	return decodeProfile(sector, raw), nil
+	return decodeProfileFormat(sector, raw, info.Format, info.Buttons), nil
 }
 
 // writeSector recomputes the CRC over a sector buffer and writes it back, then
@@ -669,6 +738,92 @@ func (d *Device) WriteProfileDPISettings(sector int, stages []DPIStage, defaultS
 		return 0, err
 	}
 	return actual, nil
+}
+
+// WriteClassicProfileDPISettings stores all five format-2 DPI values used by
+// the G502 HERO. Disabled stages are encoded as zero, matching its factory
+// profiles. Byte 1 selects the profile default and byte 2 selects DPI Shift.
+func (d *Device) WriteClassicProfileDPISettings(sector int, stages []DPIStage, defaultStage, currentStage, shiftStage, maxDPI int) (int, error) {
+	if len(stages) != 5 {
+		return 0, fmt.Errorf("exactly five DPI stages are required")
+	}
+	if defaultStage < 0 || defaultStage >= len(stages) || !stages[defaultStage].Enabled {
+		return 0, fmt.Errorf("default DPI stage is invalid or disabled")
+	}
+	if currentStage < 0 || currentStage >= len(stages) || !stages[currentStage].Enabled {
+		currentStage = defaultStage
+	}
+	if shiftStage < 0 || shiftStage >= len(stages) || !stages[shiftStage].Enabled {
+		return 0, fmt.Errorf("DPI Shift stage is invalid or disabled")
+	}
+	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
+		if len(raw) < 13 {
+			return fmt.Errorf("profile sector too small for G502 DPI fields")
+		}
+		for i, stage := range stages {
+			dpi := 0
+			if stage.Enabled {
+				dpi = stage.X
+				if dpi < 100 || dpi > maxDPI {
+					return fmt.Errorf("DPI stage %d must be 100..%d", i+1, maxDPI)
+				}
+			}
+			off := 3 + i*2
+			raw[off], raw[off+1] = byte(dpi), byte(dpi>>8)
+		}
+		raw[1] = byte(defaultStage)
+		raw[2] = byte(shiftStage)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	// Bootstrapping a factory profile selects its new RAM sector and therefore
+	// enters onboard mode. Return sensor ownership to the host before applying
+	// the live stage; otherwise the first save can be silently ignored.
+	if err := d.activateLiveDPI(stages[currentStage].X); err != nil {
+		return 0, err
+	}
+	return actual, nil
+}
+
+func (d *Device) WriteClassicProfileDPIStage(sector, stage, x int, enabled, makeDefault bool, maxDPI int) (int, error) {
+	profiles, err := d.Profiles()
+	if err != nil {
+		return 0, err
+	}
+	for _, profile := range profiles {
+		if profile.Sector != sector {
+			continue
+		}
+		stages := profile.DPIStages[:]
+		stages[stage].X, stages[stage].Y, stages[stage].Enabled = x, x, enabled
+		defaultStage := profile.ResIndex
+		if makeDefault {
+			defaultStage = stage
+		}
+		return d.WriteClassicProfileDPISettings(sector, stages, defaultStage, stage, profile.ShiftIndex, maxDPI)
+	}
+	return 0, fmt.Errorf("profile sector 0x%04X was not found", sector)
+}
+
+func (d *Device) WriteClassicProfileResolution(sector, dpi, maxDPI int) error {
+	if dpi < 100 || dpi > maxDPI {
+		return fmt.Errorf("DPI must be 100..%d", maxDPI)
+	}
+	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
+		stage := int(raw[1])
+		if stage < 0 || stage > 4 {
+			stage = 0
+		}
+		off := 3 + stage*2
+		raw[off], raw[off+1] = byte(dpi), byte(dpi>>8)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return d.ReloadProfile(actual)
 }
 
 // SetCurrentDPIIndex selects a 0-based DPI record in the current profile.
@@ -864,6 +1019,29 @@ func (d *Device) SetProfileReportRateHz(sector, hz int) (int, error) {
 		return 0, err
 	}
 	if err := d.ReloadProfile(actual); err != nil {
+		return 0, err
+	}
+	return actual, nil
+}
+
+// SetClassicProfileReportRateHz stores the G502's report interval (1, 2, 4,
+// or 8 milliseconds) and applies the same rate through feature 0x8060.
+func (d *Device) SetClassicProfileReportRateHz(sector, hz int) (int, error) {
+	interval := 0
+	if hz > 0 && 1000%hz == 0 {
+		interval = 1000 / hz
+	}
+	if interval != 1 && interval != 2 && interval != 4 && interval != 8 {
+		return 0, fmt.Errorf("unsupported G502 report rate %d Hz", hz)
+	}
+	actual, err := d.patchProfileSectorResolved(sector, func(raw []byte) error {
+		raw[0] = byte(interval)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := d.SetReportRate(hz); err != nil {
 		return 0, err
 	}
 	return actual, nil
